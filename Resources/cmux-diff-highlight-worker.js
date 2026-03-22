@@ -34,6 +34,13 @@ const commentPrefixes = {
   scss: ["//", "/*"],
 };
 
+const keywordPatterns = {};
+for (const [lang, keywords] of Object.entries(keywordSets)) {
+  if (keywords.size > 0) {
+    keywordPatterns[lang] = new RegExp(`\\b(${Array.from(keywords).join("|")})\\b`, "g");
+  }
+}
+
 self.onmessage = (event) => {
   const payload = event.data ?? {};
   const language = payload.language ?? "plain";
@@ -69,9 +76,9 @@ function highlightLine(text, language) {
 
   working = working.replace(/\b\d+(?:\.\d+)?\b/g, '<span class="tok-number">$&</span>');
 
-  const keywords = keywordSets[language];
-  if (keywords && keywords.size > 0) {
-    const pattern = new RegExp(`\\b(${Array.from(keywords).join("|")})\\b`, "g");
+  const pattern = keywordPatterns[language];
+  if (pattern) {
+    pattern.lastIndex = 0;
     working = working.replace(pattern, '<span class="tok-keyword">$1</span>');
   }
 

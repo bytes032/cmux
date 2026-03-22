@@ -46,8 +46,7 @@ struct DiffPanelView: View {
                                 FileStatsView(
                                     additions: node.additions,
                                     deletions: node.deletions,
-                                    isBinary: false,
-                                    dimmed: false
+                                    isBinary: false
                                 )
                             }
 
@@ -90,7 +89,7 @@ struct DiffPanelView: View {
 
                         Spacer(minLength: 4)
 
-                        FileStatsView(additions: node.additions, deletions: node.deletions, isBinary: node.isBinary, dimmed: false)
+                        FileStatsView(additions: node.additions, deletions: node.deletions, isBinary: node.isBinary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, CGFloat(depth) * 16 + 18)
@@ -111,7 +110,6 @@ struct DiffPanelView: View {
         let additions: Int
         let deletions: Int
         let isBinary: Bool
-        let dimmed: Bool
 
         var body: some View {
             if isBinary {
@@ -119,17 +117,16 @@ struct DiffPanelView: View {
                     .font(.system(size: 9, weight: .bold, design: .rounded))
                     .foregroundColor(.secondary.opacity(0.5))
             } else {
-                let opacity: Double = dimmed ? 0.6 : 1.0
                 HStack(spacing: 3) {
                     if additions > 0 {
                         Text("+\(additions)")
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(additionColor.opacity(opacity))
+                            .foregroundColor(additionColor)
                     }
                     if deletions > 0 {
                         Text("-\(deletions)")
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(deletionColor.opacity(opacity))
+                            .foregroundColor(deletionColor)
                     }
                 }
             }
@@ -267,9 +264,15 @@ struct DiffPanelView: View {
     }
 
     private var loadingOverlayView: some View {
-        loadingView
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(backgroundColor.opacity(0.86))
+        Group {
+            if panel.hasLoadedSnapshot {
+                diffLoadingSkeletonView
+            } else {
+                loadingView
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(backgroundColor.opacity(0.88))
     }
 
     private var cleanView: some View {
@@ -356,6 +359,70 @@ struct DiffPanelView: View {
             }
         }
         .background(inspectorBackgroundColor)
+    }
+
+    private var diffLoadingSkeletonView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(0..<3, id: \.self) { index in
+                    skeletonFileCard(lineCount: index == 0 ? 9 : 6)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func skeletonFileCard(lineCount: Int) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.secondary.opacity(0.16))
+                    .frame(width: 168, height: 12)
+
+                Spacer(minLength: 0)
+
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Self.additionColor.opacity(0.18))
+                    .frame(width: 30, height: 10)
+
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Self.deletionColor.opacity(0.16))
+                    .frame(width: 26, height: 10)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(sectionHeaderBackgroundColor.opacity(0.42))
+
+            VStack(spacing: 0) {
+                ForEach(0..<lineCount, id: \.self) { row in
+                    HStack(spacing: 0) {
+                        RoundedRectangle(cornerRadius: 0)
+                            .fill(Color.secondary.opacity(0.08))
+                            .frame(width: 56, height: 24)
+
+                        RoundedRectangle(cornerRadius: 0)
+                            .fill(Color.secondary.opacity(0.07))
+                            .frame(width: 56, height: 24)
+
+                        RoundedRectangle(cornerRadius: 0)
+                            .fill(
+                                row.isMultiple(of: 5)
+                                    ? Self.additionColor.opacity(0.12)
+                                    : (row.isMultiple(of: 4) ? Self.deletionColor.opacity(0.10) : Color.secondary.opacity(0.06))
+                            )
+                            .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
+                    }
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.06), lineWidth: 1)
+        )
+        .redacted(reason: .placeholder)
     }
 
     private var inspectorToggle: some View {
@@ -505,6 +572,7 @@ struct DiffPanelView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
                 commitRow(
+                    prefix: nil,
                     title: String(localized: "diffPanel.scope.workingTree", defaultValue: "Working Tree"),
                     subtitle: panel.repositoryDisplayName,
                     isSelected: panel.isShowingWorkingTree
@@ -520,7 +588,8 @@ struct DiffPanelView: View {
                 } else {
                     ForEach(panel.commits) { commit in
                         commitRow(
-                            title: "\(commit.shortSHA) \(commit.subject)",
+                            prefix: commit.shortSHA,
+                            title: commit.subject,
                             subtitle: "\(commit.relativeDate) \u{00B7} \(commit.author)",
                             isSelected: panel.selectedCommitSHA == commit.sha
                         ) {
@@ -536,6 +605,7 @@ struct DiffPanelView: View {
     }
 
     private func commitRow(
+        prefix: String?,
         title: String,
         subtitle: String,
         isSelected: Bool,
@@ -543,11 +613,25 @@ struct DiffPanelView: View {
     ) -> some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
-                    .foregroundColor(isSelected ? .primary : .primary.opacity(0.85))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    if let prefix, !prefix.isEmpty {
+                        Text(prefix)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.secondary.opacity(0.82))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(Color.primary.opacity(isSelected ? 0.10 : 0.06))
+                            )
+                    }
+
+                    Text(title)
+                        .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
+                        .foregroundColor(isSelected ? .primary : .primary.opacity(0.85))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
 
                 Text(subtitle)
                     .font(.system(size: 10.5))

@@ -133,8 +133,7 @@ function renderFile(file, fileIndex, totalFiles) {
   const body = document.createElement("div");
   body.className = "diff-file-body";
   if (state.collapsedPaths?.[file.path]) {
-    body.hidden = true;
-    fileHeader.icon.textContent = "▸";
+    setFileBodyCollapsed(body, true, false);
   }
 
   if (file.isBinary) {
@@ -259,7 +258,7 @@ function renderFileHeader(file, totalFiles) {
       state.collapsedPaths[file.path] = nextCollapsed;
       const body = button.nextElementSibling;
       if (body) {
-        body.hidden = nextCollapsed;
+        setFileBodyCollapsed(body, nextCollapsed, true);
       }
     });
   } else {
@@ -279,6 +278,47 @@ function renderHunkHeader(hunk) {
   header.title = hunk.header;
 
   return header;
+}
+
+function setFileBodyCollapsed(body, collapsed, animated) {
+  if (!animated) {
+    body.classList.toggle("is-collapsed", collapsed);
+    body.style.height = collapsed ? "0px" : "";
+    body.style.opacity = collapsed ? "0" : "";
+    return;
+  }
+
+  const cleanup = () => {
+    body.style.height = collapsed ? "0px" : "";
+    body.style.opacity = collapsed ? "0" : "";
+    body.removeEventListener("transitionend", cleanup);
+  };
+
+  body.removeEventListener("transitionend", cleanup);
+
+  if (collapsed) {
+    const currentHeight = body.getBoundingClientRect().height || body.scrollHeight;
+    body.style.height = `${currentHeight}px`;
+    body.style.opacity = "1";
+    body.offsetHeight;
+    body.classList.add("is-collapsed");
+    requestAnimationFrame(() => {
+      body.style.height = "0px";
+      body.style.opacity = "0";
+    });
+    body.addEventListener("transitionend", cleanup);
+    return;
+  }
+
+  body.classList.remove("is-collapsed");
+  body.style.height = "0px";
+  body.style.opacity = "0";
+  body.offsetHeight;
+  requestAnimationFrame(() => {
+    body.style.height = `${body.scrollHeight}px`;
+    body.style.opacity = "1";
+  });
+  body.addEventListener("transitionend", cleanup);
 }
 
 function splitDisplayPath(path) {

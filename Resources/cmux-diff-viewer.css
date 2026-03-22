@@ -206,6 +206,19 @@ html[data-theme="dark"] .empty-state {
   color: var(--muted-dark);
 }
 
+.diff-file-body {
+  overflow: clip;
+  transition:
+    height 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 180ms ease;
+  will-change: height, opacity;
+}
+
+.diff-file-body.is-collapsed {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .hunk {
   border-top: 1px solid var(--border-light);
 }
