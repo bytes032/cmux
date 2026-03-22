@@ -68,7 +68,7 @@ final class DiffSelectedFileWebPayloadContext {
     ) -> DiffWebViewRenderPayload {
         _ = scopePatch
         return DiffWebViewRenderPayload(
-            file: nil,
+            files: [],
             selectedFilePath: selectedFilePath,
             isDarkMode: isDarkMode,
             cacheIdentity: "\(scopeIdentity)|file:\(selectedFilePath)"
@@ -326,20 +326,20 @@ struct DiffWebViewRenderableFile: Encodable, Equatable, Sendable {
 }
 
 struct DiffWebViewRenderPayload: Encodable, Equatable, Sendable {
-    let file: DiffWebViewRenderableFile?
+    let files: [DiffWebViewRenderableFile]
     let selectedFilePath: String?
     let isDarkMode: Bool
     let cacheIdentity: String
     let precomputedFullPayload: DiffWebViewCachedFullPayload?
 
     init(
-        file: DiffWebViewRenderableFile?,
+        files: [DiffWebViewRenderableFile],
         selectedFilePath: String?,
         isDarkMode: Bool,
         cacheIdentity: String,
         precomputedFullPayload: DiffWebViewCachedFullPayload? = nil
     ) {
-        self.file = file
+        self.files = files
         self.selectedFilePath = selectedFilePath
         self.isDarkMode = isDarkMode
         self.cacheIdentity = cacheIdentity
@@ -347,7 +347,7 @@ struct DiffWebViewRenderPayload: Encodable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case file
+        case files
         case selectedFilePath
         case isDarkMode
     }
@@ -726,7 +726,7 @@ enum DiffWebViewUpdatePlanner {
         }
         guard previous != next else { return nil }
 
-        if previous.file == next.file,
+        if previous.files == next.files,
            previous.selectedFilePath == next.selectedFilePath,
            previous.isDarkMode != next.isDarkMode {
             let literal = next.isDarkMode ? "true" : "false"

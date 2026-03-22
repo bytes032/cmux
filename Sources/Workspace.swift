@@ -385,6 +385,7 @@ extension Workspace {
         let terminalSnapshot: SessionTerminalPanelSnapshot?
         let browserSnapshot: SessionBrowserPanelSnapshot?
         let markdownSnapshot: SessionMarkdownPanelSnapshot?
+        let diffSnapshot: SessionDiffPanelSnapshot?
         switch panel.panelType {
         case .terminal:
             guard let terminalPanel = panel as? TerminalPanel else { return nil }
@@ -408,6 +409,7 @@ extension Workspace {
             )
             browserSnapshot = nil
             markdownSnapshot = nil
+            diffSnapshot = nil
         case .browser:
             guard let browserPanel = panel as? BrowserPanel else { return nil }
             terminalSnapshot = nil
@@ -422,11 +424,19 @@ extension Workspace {
                 forwardHistoryURLStrings: historySnapshot.forwardHistoryURLStrings
             )
             markdownSnapshot = nil
+            diffSnapshot = nil
         case .markdown:
             guard let markdownPanel = panel as? MarkdownPanel else { return nil }
             terminalSnapshot = nil
             browserSnapshot = nil
             markdownSnapshot = SessionMarkdownPanelSnapshot(filePath: markdownPanel.filePath)
+            diffSnapshot = nil
+        case .diff:
+            guard let diffPanel = panel as? DiffPanel else { return nil }
+            terminalSnapshot = nil
+            browserSnapshot = nil
+            markdownSnapshot = nil
+            diffSnapshot = SessionDiffPanelSnapshot(repositoryRootPath: diffPanel.repositoryRootPath)
         }
 
         return SessionPanelSnapshot(
@@ -442,7 +452,8 @@ extension Workspace {
             ttyName: ttyName,
             terminal: terminalSnapshot,
             browser: browserSnapshot,
-            markdown: markdownSnapshot
+            markdown: markdownSnapshot,
+            diff: diffSnapshot
         )
     }
 
@@ -618,6 +629,17 @@ extension Workspace {
             }
             applySessionPanelMetadata(snapshot, toPanelId: markdownPanel.id)
             return markdownPanel.id
+        case .diff:
+            guard let repositoryRootPath = snapshot.diff?.repositoryRootPath,
+                  let diffPanel = newDiffSurface(
+                    inPane: paneId,
+                    repositoryRootPath: repositoryRootPath,
+                    focus: false
+                  ) else {
+                return nil
+            }
+            applySessionPanelMetadata(snapshot, toPanelId: diffPanel.id)
+            return diffPanel.id
         }
     }
 
@@ -5293,6 +5315,7 @@ final class Workspace: Identifiable, ObservableObject {
         static let terminal = "terminal"
         static let browser = "browser"
         static let markdown = "markdown"
+        static let diff = "diff"
     }
 
     enum PanelShellActivityState: String {
@@ -5320,6 +5343,8 @@ final class Workspace: Identifiable, ObservableObject {
     private static func currentSplitButtonTooltips() -> BonsplitConfiguration.SplitButtonTooltips {
         BonsplitConfiguration.SplitButtonTooltips(
             newTerminal: KeyboardShortcutSettings.Action.newSurface.tooltip("New Terminal"),
+            openInVSCode: String(localized: "menu.openInVSCodeDesktop", defaultValue: "Open Current Directory in VS Code"),
+            showDiff: String(localized: "titlebar.diff.tooltip", defaultValue: "Show workspace diff"),
             newBrowser: KeyboardShortcutSettings.Action.openBrowser.tooltip("New Browser"),
             splitRight: KeyboardShortcutSettings.Action.splitRight.tooltip("Split Right"),
             splitDown: KeyboardShortcutSettings.Action.splitDown.tooltip("Split Down")
@@ -5765,6 +5790,10 @@ final class Workspace: Identifiable, ObservableObject {
         panels[panelId] as? MarkdownPanel
     }
 
+    func diffPanel(for panelId: UUID) -> DiffPanel? {
+        panels[panelId] as? DiffPanel
+    }
+
     private func surfaceKind(for panel: any Panel) -> String {
         switch panel.panelType {
         case .terminal:
@@ -5773,6 +5802,8 @@ final class Workspace: Identifiable, ObservableObject {
             return SurfaceKind.browser
         case .markdown:
             return SurfaceKind.markdown
+        case .diff:
+            return SurfaceKind.diff
         }
     }
 
@@ -7408,6 +7439,67 @@ final class Workspace: Identifiable, ObservableObject {
         return markdownPanel
     }
 
+    func newDiffSplit(
+        from panelId: UUID,
+        orientation: SplitOrientation,
+        insertFirst: Bool = false,
+        repositoryRootPath: String,
+        focus: Bool = true
+    ) -> DiffPanel? {
+        guard let sourceTabId = surfaceIdFromPanelId(panelId) else { return nil }
+        var sourcePaneId: PaneID?
+        for paneId in bonsplitController.allPaneIds {
+            let tabs = bonsplitController.tabs(inPane: paneId)
+            if tabs.contains(where: { $0.id == sourceTabId }) {
+                sourcePaneId = paneId
+                break
+            }
+        }
+
+        guard let paneId = sourcePaneId else { return nil }
+
+        let diffPanel = DiffPanel(workspaceId: id, repositoryRootPath: repositoryRootPath)
+        panels[diffPanel.id] = diffPanel
+        panelTitles[diffPanel.id] = diffPanel.displayTitle
+
+        let newTab = Bonsplit.Tab(
+            title: diffPanel.displayTitle,
+            icon: diffPanel.displayIcon,
+            kind: SurfaceKind.diff,
+            isDirty: diffPanel.isDirty,
+            isLoading: false,
+            isPinned: false
+        )
+        surfaceIdToPanelId[newTab.id] = diffPanel.id
+        let previousFocusedPanelId = focusedPanelId
+
+        isProgrammaticSplit = true
+        defer { isProgrammaticSplit = false }
+        guard bonsplitController.splitPane(paneId, orientation: orientation, withTab: newTab, insertFirst: insertFirst) != nil else {
+            surfaceIdToPanelId.removeValue(forKey: newTab.id)
+            panels.removeValue(forKey: diffPanel.id)
+            panelTitles.removeValue(forKey: diffPanel.id)
+            return nil
+        }
+
+        let previousHostedView = focusedTerminalPanel?.hostedView
+        if focus {
+            previousHostedView?.suppressReparentFocus()
+            focusPanel(diffPanel.id)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                previousHostedView?.clearSuppressReparentFocus()
+            }
+        } else {
+            preserveFocusAfterNonFocusSplit(
+                preferredPanelId: previousFocusedPanelId,
+                splitPanelId: diffPanel.id,
+                previousHostedView: previousHostedView
+            )
+        }
+
+        return diffPanel
+    }
+
     @discardableResult
     func newMarkdownSurface(
         inPane paneId: PaneID,
@@ -7451,6 +7543,50 @@ final class Workspace: Identifiable, ObservableObject {
 
         installMarkdownPanelSubscription(markdownPanel)
         return markdownPanel
+    }
+
+    @discardableResult
+    func newDiffSurface(
+        inPane paneId: PaneID,
+        repositoryRootPath: String,
+        focus: Bool? = nil
+    ) -> DiffPanel? {
+        let shouldFocusNewTab = focus ?? (bonsplitController.focusedPaneId == paneId)
+        let previousFocusedPanelId = focusedPanelId
+        let previousHostedView = focusedTerminalPanel?.hostedView
+
+        let diffPanel = DiffPanel(workspaceId: id, repositoryRootPath: repositoryRootPath)
+        panels[diffPanel.id] = diffPanel
+        panelTitles[diffPanel.id] = diffPanel.displayTitle
+
+        guard let newTabId = bonsplitController.createTab(
+            title: diffPanel.displayTitle,
+            icon: diffPanel.displayIcon,
+            kind: SurfaceKind.diff,
+            isDirty: diffPanel.isDirty,
+            isLoading: false,
+            isPinned: false,
+            inPane: paneId
+        ) else {
+            panels.removeValue(forKey: diffPanel.id)
+            panelTitles.removeValue(forKey: diffPanel.id)
+            return nil
+        }
+
+        surfaceIdToPanelId[newTabId] = diffPanel.id
+        if shouldFocusNewTab {
+            bonsplitController.focusPane(paneId)
+            bonsplitController.selectTab(newTabId)
+            applyTabSelection(tabId: newTabId, inPane: paneId)
+        } else {
+            preserveFocusAfterNonFocusSplit(
+                preferredPanelId: previousFocusedPanelId,
+                splitPanelId: diffPanel.id,
+                previousHostedView: previousHostedView
+            )
+        }
+
+        return diffPanel
     }
 
     /// Tear down all panels in this workspace, freeing their Ghostty surfaces.
@@ -10249,11 +10385,97 @@ extension Workspace: BonsplitDelegate {
         switch kind {
         case "terminal":
             _ = newTerminalSurface(inPane: pane)
+        case "vscode":
+            if !openDirectoryInVSCode(forPane: pane) {
+                NSSound.beep()
+            }
+        case "diff":
+            if openLiveDiff(forPane: pane) == nil {
+                NSSound.beep()
+            }
         case "browser":
             _ = newBrowserSurface(inPane: pane)
         default:
             _ = newTerminalSurface(inPane: pane)
         }
+    }
+
+    @discardableResult
+    @MainActor
+    private func openLiveDiff(forPane pane: PaneID) -> UUID? {
+        guard let sourcePath = paneDirectoryPath(for: pane) else { return nil }
+
+        let existingDiffPanels = panels.values.compactMap { $0 as? DiffPanel }
+        if let existingDiffPanel = existingDiffPanels.first {
+            existingDiffPanel.updateSourcePath(sourcePath)
+            focusPanel(existingDiffPanel.id)
+            for duplicatePanel in existingDiffPanels where duplicatePanel.id != existingDiffPanel.id {
+                _ = closePanel(duplicatePanel.id, force: true)
+            }
+            return existingDiffPanel.id
+        }
+
+        let sourcePanelId = effectiveSelectedPanelId(inPane: pane)
+            ?? bonsplitController.tabs(inPane: pane).first.flatMap { panelIdFromSurfaceId($0.id) }
+
+        if let sourcePanelId,
+           let diffPanel = newDiffSplit(
+               from: sourcePanelId,
+               orientation: .horizontal,
+               repositoryRootPath: sourcePath,
+               focus: true
+           ) {
+            return diffPanel.id
+        }
+
+        return newDiffSurface(
+            inPane: pane,
+            repositoryRootPath: sourcePath,
+            focus: true
+        )?.id
+    }
+
+    @MainActor
+    private func openDirectoryInVSCode(forPane pane: PaneID) -> Bool {
+        guard let directoryURL = paneDirectoryURL(for: pane),
+              let applicationURL = TerminalDirectoryOpenTarget.vscode.applicationURL() else {
+            return false
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.open([directoryURL], withApplicationAt: applicationURL, configuration: configuration)
+        return true
+    }
+
+    @MainActor
+    private func paneDirectoryPath(for pane: PaneID) -> String? {
+        let selectedPanelId = effectiveSelectedPanelId(inPane: pane)
+            ?? bonsplitController.tabs(inPane: pane).first.flatMap { panelIdFromSurfaceId($0.id) }
+        let rawDirectory: String = {
+            if let selectedPanelId,
+               let directory = panelDirectories[selectedPanelId],
+               !directory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return directory
+            }
+            if let selectedPanelId,
+               let requestedWorkingDirectory = terminalPanel(for: selectedPanelId)?
+                .requestedWorkingDirectory?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !requestedWorkingDirectory.isEmpty {
+                return requestedWorkingDirectory
+            }
+            return currentDirectory
+        }()
+
+        let trimmed = rawDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, FileManager.default.fileExists(atPath: trimmed) else { return nil }
+        return trimmed
+    }
+
+    @MainActor
+    private func paneDirectoryURL(for pane: PaneID) -> URL? {
+        guard let trimmed = paneDirectoryPath(for: pane) else { return nil }
+        return URL(fileURLWithPath: trimmed, isDirectory: true)
     }
 
     func splitTabBar(_ controller: BonsplitController, didRequestTabContextAction action: TabContextAction, for tab: Bonsplit.Tab, inPane pane: PaneID) {

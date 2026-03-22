@@ -11,7 +11,31 @@
     window.cmuxDiffState = {
       currentPayload: null,
       renderToken: 0,
+      collapsedPaths: {},
     };
+
+    window.cmuxReportError = function(type, error) {
+      try {
+        const message = error && error.message ? error.message : String(error);
+        window.webkit?.messageHandlers?.cmuxDiffPerf?.postMessage({
+          type,
+          mode: "selected-file",
+          totalFiles: 0,
+          visibleFiles: 0,
+          durationMs: 0,
+          message,
+        });
+      } catch (_) {
+      }
+    };
+
+    window.addEventListener("error", function(event) {
+      window.cmuxReportError("page-error", event.error || event.message || "unknown error");
+    });
+
+    window.addEventListener("unhandledrejection", function(event) {
+      window.cmuxReportError("page-rejection", event.reason || "unhandled rejection");
+    });
 
     window.cmuxReceiveDiffPayload = function(payload) {
       window.cmuxDiffState.currentPayload = payload;
@@ -34,6 +58,6 @@
       }
     };
   </script>
-  <script type="module" src="cmux-diff-viewer.js"></script>
+  <script src="cmux-diff-viewer.js"></script>
 </body>
 </html>

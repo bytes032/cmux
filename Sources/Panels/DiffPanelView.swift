@@ -30,30 +30,31 @@ struct DiffPanelView: View {
                             expandedDirectoryPaths.insert(node.id)
                         }
                     } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundColor(.secondary.opacity(0.55))
-                                .frame(width: 10)
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.secondary.opacity(0.62))
 
-                            Image(systemName: "folder.fill")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary.opacity(0.65))
+                        Text(node.name)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundColor(.primary.opacity(0.82))
+                            .lineLimit(1)
 
-                            Text(node.name)
-                                .font(.system(size: 12))
-                                .foregroundColor(.primary.opacity(0.85))
-                                .lineLimit(1)
+                            Spacer(minLength: 4)
 
-                            if node.fileCount > 1 {
-                                Text("\(node.fileCount)")
-                                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                                    .foregroundColor(.secondary.opacity(0.5))
+                            if !isExpanded {
+                                FileStatsView(
+                                    additions: node.additions,
+                                    deletions: node.deletions,
+                                    isBinary: false,
+                                    dimmed: false
+                                )
                             }
+
                         }
                         .padding(.leading, CGFloat(depth) * 16 + 4)
-                        .padding(.trailing, 6)
-                        .padding(.vertical, 2)
+                        .padding(.trailing, 8)
+                        .padding(.vertical, 3)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                     }
@@ -78,11 +79,11 @@ struct DiffPanelView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "doc.fill")
-                            .font(.system(size: 10))
+                            .font(.system(size: 9.5, weight: .medium))
                             .foregroundColor(isSelected ? .primary.opacity(0.7) : .secondary.opacity(0.45))
 
                         Text(node.name)
-                            .font(.system(size: 12))
+                            .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
                             .foregroundColor(isSelected ? .primary : .primary.opacity(0.8))
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -93,14 +94,15 @@ struct DiffPanelView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, CGFloat(depth) * 16 + 18)
-                    .padding(.trailing, 6)
-                    .padding(.vertical, 2)
+                    .padding(.trailing, 8)
+                    .padding(.vertical, 3)
                     .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(isSelected ? cmuxAccentColor().opacity(0.18) : Color.clear)
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(isSelected ? cmuxAccentColor().opacity(0.16) : Color.clear)
                     )
                 }
                 .buttonStyle(.plain)
+                .id(fullPath)
             }
         }
     }
@@ -176,8 +178,6 @@ struct DiffPanelView: View {
         HStack(spacing: 0) {
             mainContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            Divider()
 
             inspector
                 .frame(width: inspectorWidth)
@@ -347,7 +347,8 @@ struct DiffPanelView: View {
                     }
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.vertical, 8)
+                .background(sectionHeaderBackgroundColor.opacity(0.32))
 
                 Divider().opacity(0.3)
 
@@ -359,24 +360,27 @@ struct DiffPanelView: View {
 
     private var inspectorToggle: some View {
         HStack(spacing: 0) {
-            inspectorToggleButton(
-                title: String(localized: "diffPanel.toggle.files", defaultValue: "Files"),
-                icon: "doc.on.doc",
-                isActive: !showingCommits
-            ) {
-                showingCommits = false
-            }
+            HStack(spacing: 0) {
+                inspectorToggleButton(
+                    title: String(localized: "diffPanel.toggle.files", defaultValue: "Files"),
+                    icon: "doc.on.doc",
+                    isActive: !showingCommits
+                ) {
+                    showingCommits = false
+                }
 
-            inspectorToggleButton(
-                title: String(localized: "diffPanel.toggle.commits", defaultValue: "Commits"),
-                icon: "clock.arrow.circlepath",
-                isActive: showingCommits
-            ) {
-                showingCommits = true
+                inspectorToggleButton(
+                    title: String(localized: "diffPanel.toggle.commits", defaultValue: "Commits"),
+                    icon: "clock.arrow.circlepath",
+                    isActive: showingCommits
+                ) {
+                    showingCommits = true
+                }
             }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
+        .background(sectionHeaderBackgroundColor.opacity(0.52))
     }
 
     private func inspectorToggleButton(
@@ -388,16 +392,16 @@ struct DiffPanelView: View {
         Button(action: action) {
             HStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: 10, weight: .semibold))
                 Text(title)
                     .font(.system(size: 11, weight: .semibold))
             }
             .foregroundColor(isActive ? .primary : .secondary.opacity(0.7))
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 5)
+            .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isActive ? Color.primary.opacity(0.08) : Color.clear)
+                    .fill(isActive ? Color.primary.opacity(0.09) : Color.clear)
             )
             .contentShape(Rectangle())
         }
@@ -426,15 +430,19 @@ struct DiffPanelView: View {
                                 FileTreeRowView(
                                     node: node,
                                     depth: 0,
-                                    selectedFilePath: panel.selectedFilePath,
+                                    selectedFilePath: sidebarHighlightedFilePath,
                                     expandedDirectoryPaths: $expandedDirectoryPaths
                                 ) { path in
-                                    panel.selectFile(path)
+                                    if !panel.isShowingAllFiles, panel.selectedFilePath == path {
+                                        panel.selectAllFiles()
+                                    } else {
+                                        panel.selectFile(path)
+                                    }
                                 }
                             }
                         }
                         .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
+                        .padding(.vertical, 8)
                     }
                 }
             }
@@ -450,15 +458,32 @@ struct DiffPanelView: View {
         return HStack(spacing: 4) {
             Text("\(files.count)")
                 .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundColor(.secondary)
+                .foregroundColor(.secondary.opacity(0.86))
             Text(files.count == 1
                  ? String(localized: "diffPanel.summary.file", defaultValue: "file")
                  : String(localized: "diffPanel.summary.files", defaultValue: "files")
             )
             .font(.system(size: 10))
-            .foregroundColor(.secondary)
+            .foregroundColor(.secondary.opacity(0.82))
 
             Spacer(minLength: 4)
+
+            Button {
+                panel.selectAllFiles()
+            } label: {
+                Text(String(localized: "diffPanel.sidebar.files.all", defaultValue: "All Files"))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(panel.isShowingAllFiles ? .primary : .secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(panel.isShowingAllFiles ? Color.primary.opacity(0.10) : Color.clear)
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(panel.isShowingAllFiles)
 
             if totalAdditions > 0 {
                 Text("+\(totalAdditions)")
@@ -472,13 +497,13 @@ struct DiffPanelView: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 5)
-        .background(sectionHeaderBackgroundColor.opacity(0.6))
+        .padding(.vertical, 6)
+        .background(sectionHeaderBackgroundColor.opacity(0.54))
     }
 
     private var commitsPane: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 commitRow(
                     title: String(localized: "diffPanel.scope.workingTree", defaultValue: "Working Tree"),
                     subtitle: panel.repositoryDisplayName,
@@ -505,7 +530,7 @@ struct DiffPanelView: View {
                 }
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.vertical, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -519,23 +544,23 @@ struct DiffPanelView: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                    .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
                     .foregroundColor(isSelected ? .primary : .primary.opacity(0.85))
                     .lineLimit(1)
                     .truncationMode(.tail)
 
                 Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary.opacity(0.8))
+                    .font(.system(size: 10.5))
+                    .foregroundColor(.secondary.opacity(0.74))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(isSelected ? cmuxAccentColor().opacity(0.16) : Color.clear)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isSelected ? cmuxAccentColor().opacity(0.14) : Color.clear)
             )
         }
         .buttonStyle(.plain)
@@ -558,6 +583,13 @@ struct DiffPanelView: View {
 
     private var filteredFiles: [DiffPanel.FileEntry] {
         filteredSearchResults.map(\.file)
+    }
+
+    private var sidebarHighlightedFilePath: String? {
+        if panel.isShowingAllFiles {
+            return nil
+        }
+        return panel.selectedFilePath
     }
 
     private var filteredTreeFiles: [DiffPanelTreeFile] {
@@ -588,14 +620,14 @@ struct DiffPanelView: View {
 
     private var inspectorBackgroundColor: Color {
         colorScheme == .dark
-            ? Color(nsColor: NSColor(red: 0.090, green: 0.098, blue: 0.114, alpha: 1.0))
-            : Color(nsColor: NSColor(red: 0.955, green: 0.960, blue: 0.972, alpha: 1.0))
+            ? Color(nsColor: NSColor(red: 0.086, green: 0.094, blue: 0.109, alpha: 1.0))
+            : Color(nsColor: NSColor(red: 0.952, green: 0.958, blue: 0.970, alpha: 1.0))
     }
 
     private var sectionHeaderBackgroundColor: Color {
         colorScheme == .dark
-            ? Color(nsColor: NSColor(red: 0.115, green: 0.125, blue: 0.146, alpha: 1.0))
-            : Color(nsColor: NSColor(red: 0.938, green: 0.944, blue: 0.958, alpha: 1.0))
+            ? Color(nsColor: NSColor(red: 0.108, green: 0.118, blue: 0.138, alpha: 1.0))
+            : Color(nsColor: NSColor(red: 0.936, green: 0.942, blue: 0.956, alpha: 1.0))
     }
 
     private func triggerFocusFlashAnimation() {
@@ -732,8 +764,8 @@ private struct DiffWebViewRepresentable: NSViewRepresentable {
             pushInFlight = true
             #if DEBUG
             lastPayloadPushStartedAt = Date()
-            dlog(
-                "diff.webview.push kind=\(update.kind) payloadBytes=\(update.encodedBytes) selected=\(pendingPayload.selectedFilePath ?? "none") file=\(pendingPayload.file?.displayPath ?? "none")"
+                dlog(
+                "diff.webview.push kind=\(update.kind) payloadBytes=\(update.encodedBytes) selected=\(pendingPayload.selectedFilePath ?? "all-files") fileCount=\(pendingPayload.files.count) firstFile=\(pendingPayload.files.first?.displayPath ?? "none")"
             )
             #endif
             webView.evaluateJavaScript(update.javaScript) { [weak self] _, error in
@@ -768,8 +800,10 @@ private struct DiffWebViewRepresentable: NSViewRepresentable {
             let totalFiles = payload["totalFiles"] as? Int ?? -1
             let visibleFiles = payload["visibleFiles"] as? Int ?? -1
             let durationMs = payload["durationMs"] as? Double ?? -1
+            let messageText = payload["message"] as? String
+            let path = payload["path"] as? String
             dlog(
-                "diff.webview.render type=\(type) mode=\(mode) totalFiles=\(totalFiles) visibleFiles=\(visibleFiles) durationMs=\(String(format: "%.2f", durationMs))"
+                "diff.webview.render type=\(type) mode=\(mode) totalFiles=\(totalFiles) visibleFiles=\(visibleFiles) durationMs=\(String(format: "%.2f", durationMs)) path=\(path ?? "n/a") message=\(messageText ?? "n/a")"
             )
             #endif
         }

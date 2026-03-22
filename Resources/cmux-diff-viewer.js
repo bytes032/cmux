@@ -1,99 +1,148 @@
 const state = window.cmuxDiffState;
 const root = document.getElementById("root");
 const perfReporter = window.webkit?.messageHandlers?.cmuxDiffPerf;
-const worker = new Worker(new URL("./cmux-diff-highlight-worker.js", import.meta.url));
+let worker = null;
+let workerCreationAttempted = false;
 
 let currentHighlightRequestId = 0;
 let currentHighlightToken = 0;
 
-worker.onmessage = (event) => {
-  const payload = event.data ?? {};
-  if (payload.requestId !== currentHighlightRequestId || payload.renderToken !== currentHighlightToken) {
-    return;
+function ensureHighlightWorker() {
+  if (workerCreationAttempted) {
+    return worker;
   }
 
-  const startedAt = performance.now();
-  const highlightedLines = payload.lines ?? [];
-  for (const line of highlightedLines) {
-    const node = document.querySelector(`[data-highlight-id="${cssEscape(line.id)}"]`);
-    if (!node) {
-      continue;
-    }
-    node.innerHTML = line.html;
+  workerCreationAttempted = true;
+  try {
+    worker = new Worker("cmux-diff-highlight-worker.js");
+    worker.onmessage = (event) => {
+      const payload = event.data ?? {};
+      if (payload.requestId !== currentHighlightRequestId || payload.renderToken !== currentHighlightToken) {
+        return;
+      }
+
+      const startedAt = performance.now();
+      const highlightedLines = payload.lines ?? [];
+      for (const line of highlightedLines) {
+        const node = document.querySelector(`[data-highlight-id="${cssEscape(line.id)}"]`);
+        if (!node) {
+          continue;
+        }
+        node.innerHTML = line.html;
+      }
+      reportPerf({
+        type: "highlight-ready",
+        mode: "selected-file",
+        totalFiles: payload.fileCount ?? 1,
+        visibleFiles: 1,
+        durationMs: roundMs(performance.now() - startedAt),
+      });
+    };
+  } catch (error) {
+    console.error("cmux diff worker unavailable", error);
+    window.cmuxReportError?.("worker-unavailable", error);
+    worker = null;
   }
-  reportPerf({
-    type: "highlight-ready",
-    mode: "selected-file",
-    totalFiles: payload.fileCount ?? 1,
-    visibleFiles: 1,
-    durationMs: roundMs(performance.now() - startedAt),
-  });
-};
+
+  return worker;
+}
 
 window.cmuxDiffRender = function(payload) {
-  state.currentPayload = payload;
-  currentHighlightToken += 1;
-  const renderToken = currentHighlightToken;
-  document.documentElement.dataset.theme = payload.isDarkMode ? "dark" : "light";
+  try {
+    state.currentPayload = payload;
+    currentHighlightToken += 1;
+    const renderToken = currentHighlightToken;
+    document.documentElement.dataset.theme = payload.isDarkMode ? "dark" : "light";
+    const files = Array.isArray(payload.files) ? payload.files : [];
 
-  const renderStartedAt = performance.now();
-  root.textContent = "";
+    const renderStartedAt = performance.now();
+    root.textContent = "";
 
-  if (!payload.file) {
-    reportPerf({
-      type: "render-empty",
-      mode: "selected-file",
-      totalFiles: 0,
-      visibleFiles: 0,
-      durationMs: 0,
-    });
-    return;
-  }
-
-  const { element, highlightLines } = renderFile(payload.file);
-  root.appendChild(element);
-
-  const renderDurationMs = roundMs(performance.now() - renderStartedAt);
-  reportPerf({
-    type: "render-ready",
-    mode: "selected-file",
-    totalFiles: 1,
-    visibleFiles: 1,
-    durationMs: renderDurationMs,
-  });
-
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
+    if (files.length === 0) {
       reportPerf({
-        type: "first-paint",
+        type: "render-empty",
         mode: "selected-file",
-        totalFiles: 1,
-        visibleFiles: 1,
-        durationMs: roundMs(performance.now() - renderStartedAt),
+        totalFiles: 0,
+        visibleFiles: 0,
+        durationMs: 0,
+      });
+      return;
+    }
+
+    const highlightLines = [];
+    files.forEach((file, fileIndex) => {
+      const result = renderFile(file, fileIndex, files.length);
+      root.appendChild(result.element);
+      highlightLines.push(...result.highlightLines);
+    });
+
+    const renderDurationMs = roundMs(performance.now() - renderStartedAt);
+    reportPerf({
+      type: "render-ready",
+      mode: "selected-file",
+      totalFiles: files.length,
+      visibleFiles: visibleFileCount(files),
+      durationMs: renderDurationMs,
+    });
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        reportPerf({
+          type: "first-paint",
+          mode: "selected-file",
+          totalFiles: files.length,
+          visibleFiles: visibleFileCount(files),
+          durationMs: roundMs(performance.now() - renderStartedAt),
+        });
       });
     });
-  });
-
-  currentHighlightRequestId += 1;
-  if (highlightLines.length > 0) {
-    worker.postMessage({
-      requestId: currentHighlightRequestId,
-      renderToken,
-      language: payload.file.language,
-      lines: highlightLines,
-    });
+    currentHighlightRequestId += 1;
+    const highlightWorker = ensureHighlightWorker();
+    if (highlightWorker && highlightLines.length > 0 && files.length === 1) {
+      highlightWorker.postMessage({
+        requestId: currentHighlightRequestId,
+        renderToken,
+        language: files[0]?.language ?? "plain",
+        lines: highlightLines,
+        fileCount: files.length,
+      });
+    }
+  } catch (error) {
+    console.error("cmux diff render failed", error);
+    root.textContent = "";
+    const errorState = document.createElement("div");
+    errorState.className = "empty-state";
+    errorState.textContent = `Diff render failed: ${error && error.message ? error.message : String(error)}`;
+    root.appendChild(errorState);
+    window.cmuxReportError?.("render-error", error);
   }
 };
 
-function renderFile(file) {
+if (state.currentPayload) {
+  window.cmuxDiffRender(state.currentPayload);
+}
+
+function renderFile(file, fileIndex, totalFiles) {
   const container = document.createElement("section");
   container.className = "diff-file";
+  container.dataset.filePath = file.path;
+
+  const fileHeader = renderFileHeader(file, totalFiles);
+  container.appendChild(fileHeader.button);
+
+  const body = document.createElement("div");
+  body.className = "diff-file-body";
+  if (state.collapsedPaths?.[file.path]) {
+    body.hidden = true;
+    fileHeader.icon.textContent = "▸";
+  }
 
   if (file.isBinary) {
     const binaryState = document.createElement("div");
     binaryState.className = "binary-state";
     binaryState.textContent = "Binary file changed";
-    container.appendChild(binaryState);
+    body.appendChild(binaryState);
+    container.appendChild(body);
     return { element: container, highlightLines: [] };
   }
 
@@ -101,7 +150,8 @@ function renderFile(file) {
     const emptyState = document.createElement("div");
     emptyState.className = "empty-state";
     emptyState.textContent = "No textual diff available.";
-    container.appendChild(emptyState);
+    body.appendChild(emptyState);
+    container.appendChild(body);
     return { element: container, highlightLines: [] };
   }
 
@@ -111,10 +161,7 @@ function renderFile(file) {
     const hunkElement = document.createElement("section");
     hunkElement.className = "hunk";
 
-    const header = document.createElement("div");
-    header.className = "hunk-header";
-    header.textContent = hunk.header;
-    hunkElement.appendChild(header);
+    hunkElement.appendChild(renderHunkHeader(hunk));
 
     const rows = document.createElement("div");
     rows.className = "diff-rows";
@@ -132,7 +179,7 @@ function renderFile(file) {
 
       const codeInner = document.createElement("div");
       codeInner.className = "line-code-inner";
-      const highlightId = `${hunkIndex}:${lineIndex}`;
+      const highlightId = `${fileIndex}:${hunkIndex}:${lineIndex}`;
       const wordDiffKey = String(lineIndex);
 
       if (line.isNoNewlineMarker) {
@@ -155,10 +202,94 @@ function renderFile(file) {
     });
 
     hunkElement.appendChild(rows);
-    container.appendChild(hunkElement);
+    body.appendChild(hunkElement);
   });
 
+  container.appendChild(body);
   return { element: container, highlightLines };
+}
+
+function renderFileHeader(file, totalFiles) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "diff-file-header";
+
+  const leading = document.createElement("div");
+  leading.className = "diff-file-header-leading";
+  const pathParts = splitDisplayPath(file.displayPath);
+
+  if (pathParts.directory) {
+    const directory = document.createElement("span");
+    directory.className = "diff-file-directory";
+    directory.textContent = `${pathParts.directory}/`;
+    leading.appendChild(directory);
+  }
+
+  const fileName = document.createElement("span");
+  fileName.className = "diff-file-name";
+  fileName.textContent = pathParts.fileName;
+  leading.appendChild(fileName);
+
+  button.appendChild(leading);
+
+  const trailing = document.createElement("div");
+  trailing.className = "diff-file-header-trailing";
+
+  const stats = document.createElement("div");
+  stats.className = "diff-file-stats";
+  if (file.additions > 0) {
+    const additions = document.createElement("span");
+    additions.className = "diff-stat diff-stat--add";
+    additions.textContent = `+${file.additions}`;
+    stats.appendChild(additions);
+  }
+  if (file.deletions > 0) {
+    const deletions = document.createElement("span");
+    deletions.className = "diff-stat diff-stat--del";
+    deletions.textContent = `-${file.deletions}`;
+    stats.appendChild(deletions);
+  }
+  trailing.appendChild(stats);
+
+  button.appendChild(trailing);
+
+  if (totalFiles > 1) {
+    button.addEventListener("click", () => {
+      const nextCollapsed = !Boolean(state.collapsedPaths?.[file.path]);
+      state.collapsedPaths[file.path] = nextCollapsed;
+      const body = button.nextElementSibling;
+      if (body) {
+        body.hidden = nextCollapsed;
+      }
+    });
+  } else {
+    button.disabled = true;
+  }
+
+  return { button };
+}
+
+function visibleFileCount(files) {
+  return files.reduce((count, file) => count + (state.collapsedPaths?.[file.path] ? 0 : 1), 0);
+}
+
+function renderHunkHeader(hunk) {
+  const header = document.createElement("div");
+  header.className = "hunk-header";
+  header.title = hunk.header;
+
+  return header;
+}
+
+function splitDisplayPath(path) {
+  const index = path.lastIndexOf("/");
+  if (index === -1) {
+    return { directory: "", fileName: path };
+  }
+  return {
+    directory: path.slice(0, index),
+    fileName: path.slice(index + 1),
+  };
 }
 
 function buildWordDiffMarkup(lines) {

@@ -3518,6 +3518,66 @@ class TabManager: ObservableObject {
         return tab.browserPanel(for: panelId)
     }
 
+    @discardableResult
+    func showLiveDiffForSelectedWorkspace() -> UUID? {
+        guard let workspace = selectedWorkspace else { return nil }
+        return showLiveDiff(inWorkspace: workspace.id)
+    }
+
+    @discardableResult
+    func showLiveDiff(inWorkspace tabId: UUID) -> UUID? {
+        guard let workspace = tabs.first(where: { $0.id == tabId }) else { return nil }
+        if selectedTabId != tabId {
+            selectedTabId = tabId
+        }
+
+        if let existingDiffPanel = workspace.panels.values.compactMap({ $0 as? DiffPanel }).first {
+            workspace.focusPanel(existingDiffPanel.id)
+            rememberFocusedSurface(tabId: tabId, surfaceId: existingDiffPanel.id)
+            return existingDiffPanel.id
+        }
+
+        let repositoryRootPath = workspace.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !repositoryRootPath.isEmpty else { return nil }
+
+        let splitSourcePanelId: UUID? = {
+            if let focusedPanelId = workspace.focusedPanelId,
+               workspace.panels[focusedPanelId] != nil {
+                return focusedPanelId
+            }
+            if let rememberedPanelId = lastFocusedPanelByTab[tabId],
+               workspace.panels[rememberedPanelId] != nil {
+                return rememberedPanelId
+            }
+            if let orderedPanelId = workspace.sidebarOrderedPanelIds().first(where: { workspace.panels[$0] != nil }) {
+                return orderedPanelId
+            }
+            return workspace.panels.keys.sorted { $0.uuidString < $1.uuidString }.first
+        }()
+
+        if let splitSourcePanelId,
+           let diffPanel = workspace.newDiffSplit(
+               from: splitSourcePanelId,
+               orientation: .horizontal,
+               repositoryRootPath: repositoryRootPath,
+               focus: true
+           ) {
+            rememberFocusedSurface(tabId: tabId, surfaceId: diffPanel.id)
+            return diffPanel.id
+        }
+
+        guard let paneId = workspace.bonsplitController.focusedPaneId ?? workspace.bonsplitController.allPaneIds.first,
+              let diffPanel = workspace.newDiffSurface(
+                  inPane: paneId,
+                  repositoryRootPath: repositoryRootPath,
+                  focus: true
+              ) else {
+            return nil
+        }
+
+        rememberFocusedSurface(tabId: tabId, surfaceId: diffPanel.id)
+        return diffPanel.id
+    }
     /// Open a browser in a specific workspace, optionally preferring a split-right layout.
     @discardableResult
     func openBrowser(

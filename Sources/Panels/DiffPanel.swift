@@ -99,6 +99,7 @@ final class DiffPanel: Panel, ObservableObject {
     @Published private(set) var commits: [CommitEntry] = []
     @Published private(set) var selectedCommitSHA: String?
     @Published private(set) var selectedFilePath: String?
+    @Published private(set) var isShowingAllFiles = true
     @Published private(set) var selectedFileDiff: SelectedFileDiff?
     @Published private(set) var isSelectedFileDiffLoading = false
     @Published private(set) var errorMessage: String?
@@ -223,6 +224,7 @@ final class DiffPanel: Panel, ObservableObject {
         commits = []
         selectedCommitSHA = nil
         selectedFilePath = nil
+        isShowingAllFiles = true
         selectedFileDiff = nil
         isSelectedFileDiffLoading = false
         errorMessage = nil
@@ -249,13 +251,19 @@ final class DiffPanel: Panel, ObservableObject {
     }
 
     func selectWorkingTree() {
-        guard selectedCommitSHA != nil else { return }
+        let hadCommitSelection = selectedCommitSHA != nil
+#if DEBUG
+        dlog(
+            "diff.workingTree.select hadCommit=\(hadCommitSelection ? 1 : 0) cachedPatchBytes=\(cachedWorkingTreePatch.utf8.count) cachedFiles=\(cachedWorkingTreeFiles.count)"
+        )
+#endif
         isPollingSuspendedForCommitSelection = false
         selectedCommitSHA = nil
-        isScopeLoading = false
+        isShowingAllFiles = true
+        selectedFilePath = nil
         activeWorkingTreeStatusFingerprint = cachedWorkingTreeStatusFingerprint
         applyWorkingTreeSnapshotFromCache()
-        requestRefresh(forcePatch: false)
+        requestRefresh(forcePatch: true)
     }
 
     func selectCommit(_ sha: String) {
@@ -269,7 +277,8 @@ final class DiffPanel: Panel, ObservableObject {
 #endif
         isPollingSuspendedForCommitSelection = true
         selectedCommitSHA = normalizedSHA
-
+        isShowingAllFiles = true
+        selectedFilePath = nil
         if let snapshot = commitSnapshotCache[normalizedSHA] {
             apply(commitSnapshot: snapshot)
             return
@@ -302,18 +311,22 @@ final class DiffPanel: Panel, ObservableObject {
     }
 
     func selectAllFiles() {
-        guard let defaultSelectedFile = Self.preferredDefaultSelectedFilePath(from: files) else {
+        guard !files.isEmpty else {
             selectedFilePath = nil
             selectedFileDiff = nil
             isSelectedFileDiffLoading = false
             return
         }
-        selectFile(defaultSelectedFile)
+        isShowingAllFiles = true
+        selectedFilePath = nil
+        selectedFileDiff = nil
+        isSelectedFileDiffLoading = false
     }
 
     func selectFile(_ path: String) {
         guard files.contains(where: { $0.path == path }) else { return }
         guard selectedFilePath != path else { return }
+        isShowingAllFiles = false
         selectedFilePath = path
         selectedFileDiff = nil
         isSelectedFileDiffLoading = false
@@ -460,6 +473,14 @@ final class DiffPanel: Panel, ObservableObject {
     private func reconcileSelectedFilePath(with files: [FileEntry]) {
         guard !files.isEmpty else {
             selectedFilePath = nil
+            isShowingAllFiles = true
+            self.selectedFileDiff = nil
+            self.isSelectedFileDiffLoading = false
+            return
+        }
+
+        if isShowingAllFiles {
+            selectedFilePath = nil
             self.selectedFileDiff = nil
             self.isSelectedFileDiffLoading = false
             return
@@ -489,24 +510,40 @@ final class DiffPanel: Panel, ObservableObject {
     func currentRenderPayload(isDarkMode: Bool) -> DiffWebViewRenderPayload? {
         guard hasLoadedSnapshot, !patch.isEmpty else { return nil }
 
-        let resolvedSelectedFilePath = selectedFilePath ?? Self.preferredDefaultSelectedFilePath(from: files)
-        guard let resolvedSelectedFilePath,
-              let fileEntry = files.first(where: { $0.path == resolvedSelectedFilePath }) else {
-            return nil
+        if isShowingAllFiles {
+            let renderedFiles = files.compactMap(renderableFile(for:))
+            guard !renderedFiles.isEmpty else { return nil }
+            return DiffWebViewRenderPayload(
+                files: renderedFiles,
+                selectedFilePath: nil,
+                isDarkMode: isDarkMode,
+                cacheIdentity: "\(currentTreeCacheKey)|all-files"
+            )
         }
 
-        let selectedFilePatch = currentScopeFilePatchesByPath[resolvedSelectedFilePath]
-            ?? DiffPatchSelector.singleFilePatch(from: patch, selectedFilePath: resolvedSelectedFilePath)
-        let renderedFile = DiffWebViewFileBuilder.build(
-            fileEntry: fileEntry,
-            filePatch: selectedFilePatch.isEmpty ? patch : selectedFilePatch
-        )
+        let resolvedSelectedFilePath = selectedFilePath ?? Self.preferredDefaultSelectedFilePath(from: files)
+        guard let resolvedSelectedFilePath,
+              let renderedFile = renderableFile(path: resolvedSelectedFilePath) else { return nil }
 
         return DiffWebViewRenderPayload(
-            file: renderedFile,
+            files: [renderedFile],
             selectedFilePath: resolvedSelectedFilePath,
             isDarkMode: isDarkMode,
             cacheIdentity: "\(currentTreeCacheKey)|file:\(resolvedSelectedFilePath)"
+        )
+    }
+
+    private func renderableFile(for fileEntry: FileEntry) -> DiffWebViewRenderableFile? {
+        renderableFile(path: fileEntry.path)
+    }
+
+    private func renderableFile(path: String) -> DiffWebViewRenderableFile? {
+        guard let fileEntry = files.first(where: { $0.path == path }) else { return nil }
+        let selectedFilePatch = currentScopeFilePatchesByPath[path]
+            ?? DiffPatchSelector.singleFilePatch(from: patch, selectedFilePath: path)
+        return DiffWebViewFileBuilder.build(
+            fileEntry: fileEntry,
+            filePatch: selectedFilePatch.isEmpty ? patch : selectedFilePatch
         )
     }
 

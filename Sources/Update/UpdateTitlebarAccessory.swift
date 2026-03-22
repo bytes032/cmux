@@ -405,8 +405,12 @@ struct TitlebarControlsView: View {
                 iconLabel(systemName: "plus", config: config)
             }
             .accessibilityIdentifier("titlebarControl.newTab")
-            .accessibilityLabel(String(localized: "titlebar.newWorkspace.accessibilityLabel", defaultValue: "New Workspace"))
-            .safeHelp(KeyboardShortcutSettings.Action.newTab.tooltip(String(localized: "titlebar.newWorkspace.tooltip", defaultValue: "New workspace")))
+            .accessibilityLabel(String(localized: "titlebar.newTab.accessibilityLabel", defaultValue: "New Workspace"))
+            .safeHelp(
+                KeyboardShortcutSettings.Action.newTab.tooltip(
+                    String(localized: "titlebar.newTab.tooltip", defaultValue: "Create a new workspace")
+                )
+            )
         }
 
         let paddedContent = content.padding(config.groupPadding)
@@ -551,7 +555,7 @@ struct HiddenTitlebarSidebarControlsView: View {
     @ObservedObject var notificationStore: TerminalNotificationStore
     @StateObject private var viewModel = TitlebarControlsViewModel()
 
-    private let hostWidth: CGFloat = 124
+    private let hostWidth: CGFloat = 160
     private let hostHeight: CGFloat = 28
 
     var body: some View {
@@ -565,7 +569,7 @@ struct HiddenTitlebarSidebarControlsView: View {
                     anchorView: viewModel.notificationsAnchorView
                 )
             },
-            onNewTab: { _ = AppDelegate.shared?.tabManager?.addTab() },
+            onNewTab: { _ = AppDelegate.shared?.tabManager?.addWorkspace() },
             visibilityMode: .onHover
         )
         .frame(width: hostWidth, height: hostHeight, alignment: .leading)
@@ -789,7 +793,7 @@ final class TitlebarControlsAccessoryViewController: NSTitlebarAccessoryViewCont
         self.notificationStore = notificationStore
         let toggleSidebar = { _ = AppDelegate.shared?.sidebarState?.toggle() }
         let toggleNotifications: () -> Void = { _ = AppDelegate.shared?.toggleNotificationsPopover(animated: true) }
-        let newTab = { _ = AppDelegate.shared?.tabManager?.addTab() }
+        let newTab = { _ = AppDelegate.shared?.tabManager?.addWorkspace() }
 
         hostingView = NonDraggableHostingView(
             rootView: TitlebarControlsView(
