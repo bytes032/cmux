@@ -39,7 +39,6 @@
 		A5001426 /* DiffPanelPerfSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001427 /* DiffPanelPerfSupport.swift */; };
 		A5001290 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = A5001291 /* MarkdownUI */; };
 		A5001294 /* libgit2 in Frameworks */ = {isa = PBXBuildFile; productRef = A5001295 /* libgit2 */; };
-		A5001297 /* PierreDiffsSwift in Frameworks */ = {isa = PBXBuildFile; productRef = A5001298 /* PierreDiffsSwift */; };
 		A5001405 /* PanelContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001415 /* PanelContentView.swift */; };
 		A5001406 /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001416 /* Workspace.swift */; };
 		A5001407 /* WorkspaceContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001417 /* WorkspaceContentView.swift */; };
@@ -321,7 +320,6 @@
 					A5001270 /* PostHog in Frameworks */,
 					A5001290 /* MarkdownUI in Frameworks */,
 					A5001294 /* libgit2 in Frameworks */,
-					A5001297 /* PierreDiffsSwift in Frameworks */,
 				);
 				runOnlyForDeploymentPostprocessing = 0;
 			};
@@ -606,7 +604,6 @@
 					A5001261 /* Bonsplit */,
 					A5001291 /* MarkdownUI */,
 					A5001295 /* libgit2 */,
-					A5001298 /* PierreDiffsSwift */,
 				);
 			name = GhosttyTabs;
 			productName = GhosttyTabs;
@@ -710,7 +707,6 @@
 					A5001272 /* XCRemoteSwiftPackageReference "posthog-ios" */,
 					A5001292 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 					A5001296 /* XCRemoteSwiftPackageReference "libgit2" */,
-					A5001299 /* XCRemoteSwiftPackageReference "PierreDiffsSwift" */,
 					A5001260 /* XCLocalSwiftPackageReference "bonsplit" */,
 				);
 			productRefGroup = A5001042 /* Products */;
@@ -1172,14 +1168,6 @@
 					version = 1.9.2;
 				};
 			};
-			A5001299 /* XCRemoteSwiftPackageReference "PierreDiffsSwift" */ = {
-				isa = XCRemoteSwiftPackageReference;
-				repositoryURL = "https://github.com/jamesrochabrun/PierreDiffsSwift.git";
-				requirement = {
-					kind = upToNextMajorVersion;
-					minimumVersion = 1.1.4;
-				};
-			};
 			A5001260 /* XCLocalSwiftPackageReference "bonsplit" */ = {
 				isa = XCLocalSwiftPackageReference;
 				relativePath = vendor/bonsplit;
@@ -1216,11 +1204,6 @@
 				isa = XCSwiftPackageProductDependency;
 				package = A5001296 /* XCRemoteSwiftPackageReference "libgit2" */;
 				productName = libgit2;
-			};
-			A5001298 /* PierreDiffsSwift */ = {
-				isa = XCSwiftPackageProductDependency;
-				package = A5001299 /* XCRemoteSwiftPackageReference "PierreDiffsSwift" */;
-				productName = PierreDiffsSwift;
 			};
 /* End XCSwiftPackageProductDependency section */
 
