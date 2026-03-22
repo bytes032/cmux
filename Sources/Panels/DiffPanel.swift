@@ -26,21 +26,6 @@ final class DiffPanel: Panel, ObservableObject {
         var id: String { sha }
     }
 
-    struct SelectedFileDiff: Equatable, Sendable {
-        private static let swiftRendererByteThreshold = 24_000
-
-        let cacheKey: String
-        let path: String
-        let oldContent: String
-        let newContent: String
-        let isBinary: Bool
-        let errorMessage: String?
-
-        var fileName: String { URL(fileURLWithPath: path).lastPathComponent }
-        var totalByteCount: Int { oldContent.utf8.count + newContent.utf8.count }
-        var shouldPreferFastRenderer: Bool { totalByteCount > Self.swiftRendererByteThreshold }
-    }
-
     private struct WorkingTreeSnapshot {
         let repositoryRootPath: String
         let statusFingerprint: String
@@ -49,7 +34,6 @@ final class DiffPanel: Panel, ObservableObject {
         let treeNodes: [DiffPanelTreeNode]
         let filePatchesByPath: [String: String]
         let immediateWebViewPaths: Set<String>
-        let precomputedFullPayloadsByIdentity: [String: DiffWebViewCachedFullPayload]
         let commits: [CommitEntry]
         let errorMessage: String?
     }
@@ -61,7 +45,6 @@ final class DiffPanel: Panel, ObservableObject {
         let treeNodes: [DiffPanelTreeNode]
         let filePatchesByPath: [String: String]
         let immediateWebViewPaths: Set<String>
-        let precomputedFullPayloadsByIdentity: [String: DiffWebViewCachedFullPayload]
         let errorMessage: String?
     }
 
@@ -100,8 +83,6 @@ final class DiffPanel: Panel, ObservableObject {
     @Published private(set) var selectedCommitSHA: String?
     @Published private(set) var selectedFilePath: String?
     @Published private(set) var isShowingAllFiles = true
-    @Published private(set) var selectedFileDiff: SelectedFileDiff?
-    @Published private(set) var isSelectedFileDiffLoading = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var hasLoadedSnapshot = false
     @Published private(set) var isScopeLoading = false
@@ -142,7 +123,6 @@ final class DiffPanel: Panel, ObservableObject {
 
     private let pollQueue = DispatchQueue(label: "com.cmux.diff-panel-poll", qos: .utility)
     private let commitQueue = DispatchQueue(label: "com.cmux.diff-panel-commit", qos: .userInitiated)
-    private let selectedFileQueue = DispatchQueue(label: "com.cmux.diff-panel-selected-file", qos: .userInitiated)
     private nonisolated(unsafe) var pollTimer: DispatchSourceTimer?
     private nonisolated(unsafe) var isClosed = false
     private nonisolated(unsafe) var refreshInFlight = false
@@ -154,18 +134,14 @@ final class DiffPanel: Panel, ObservableObject {
     private nonisolated(unsafe) var cachedWorkingTreeTreeNodes: [DiffPanelTreeNode] = []
     private nonisolated(unsafe) var cachedWorkingTreeFilePatchesByPath: [String: String] = [:]
     private nonisolated(unsafe) var cachedWorkingTreeImmediateWebViewPaths: Set<String> = []
-    private nonisolated(unsafe) var cachedWorkingTreePrecomputedFullPayloadsByIdentity: [String: DiffWebViewCachedFullPayload] = [:]
     private nonisolated(unsafe) var cachedWorkingTreeErrorMessage: String?
     private nonisolated(unsafe) var cachedCommits: [CommitEntry] = []
     private nonisolated(unsafe) var cachedRepositoryRootPath: String
     private nonisolated(unsafe) var commitSnapshotCache: [String: CommitSnapshot] = [:]
-    private nonisolated(unsafe) var selectedFileDiffCache: [String: SelectedFileDiff] = [:]
     private var activeWorkingTreeStatusFingerprint = ""
     private(set) var currentScopeFilePatchesByPath: [String: String] = [:]
     private(set) var currentScopeImmediateWebViewPaths: Set<String> = []
-    private(set) var currentScopePrecomputedFullPayloadsByIdentity: [String: DiffWebViewCachedFullPayload] = [:]
     private nonisolated(unsafe) var preferredWebViewIsDarkMode = false
-    private var selectedFileLoadGeneration = 0
 #if DEBUG
     private var latestCommitSelectionSHA: String?
     private var latestCommitSelectionStartedAt: Date?
@@ -225,8 +201,6 @@ final class DiffPanel: Panel, ObservableObject {
         selectedCommitSHA = nil
         selectedFilePath = nil
         isShowingAllFiles = true
-        selectedFileDiff = nil
-        isSelectedFileDiffLoading = false
         errorMessage = nil
         hasLoadedSnapshot = false
         isScopeLoading = false
@@ -234,19 +208,16 @@ final class DiffPanel: Panel, ObservableObject {
         activeWorkingTreeStatusFingerprint = ""
         currentScopeFilePatchesByPath = [:]
         currentScopeImmediateWebViewPaths = []
-        currentScopePrecomputedFullPayloadsByIdentity = [:]
         cachedWorkingTreeStatusFingerprint = ""
         cachedWorkingTreePatch = ""
         cachedWorkingTreeFiles = []
         cachedWorkingTreeTreeNodes = []
         cachedWorkingTreeFilePatchesByPath = [:]
         cachedWorkingTreeImmediateWebViewPaths = []
-        cachedWorkingTreePrecomputedFullPayloadsByIdentity = [:]
         cachedWorkingTreeErrorMessage = nil
         cachedCommits = []
         cachedRepositoryRootPath = sourcePath
         commitSnapshotCache = [:]
-        selectedFileDiffCache = [:]
         requestRefresh(forcePatch: true)
     }
 
@@ -302,6 +273,9 @@ final class DiffPanel: Panel, ObservableObject {
                 "diff.commit.snapshot sha=\(normalizedSHA) ms=\(snapshotElapsedMs) patchBytes=\(snapshot.patch.utf8.count) files=\(snapshot.files.count) error=\(snapshot.errorMessage == nil ? "0" : "1")"
             )
 #endif
+            if self.commitSnapshotCache.count >= Self.maxCommitEntries {
+                self.commitSnapshotCache.removeAll()
+            }
             self.commitSnapshotCache[normalizedSHA] = snapshot
             Task { @MainActor [weak self] in
                 guard let self, self.selectedCommitSHA == normalizedSHA else { return }
@@ -313,14 +287,10 @@ final class DiffPanel: Panel, ObservableObject {
     func selectAllFiles() {
         guard !files.isEmpty else {
             selectedFilePath = nil
-            selectedFileDiff = nil
-            isSelectedFileDiffLoading = false
             return
         }
         isShowingAllFiles = true
         selectedFilePath = nil
-        selectedFileDiff = nil
-        isSelectedFileDiffLoading = false
     }
 
     func selectFile(_ path: String) {
@@ -328,8 +298,6 @@ final class DiffPanel: Panel, ObservableObject {
         guard selectedFilePath != path else { return }
         isShowingAllFiles = false
         selectedFilePath = path
-        selectedFileDiff = nil
-        isSelectedFileDiffLoading = false
     }
 
     func setPreferredWebViewIsDarkMode(_ isDarkMode: Bool) {
@@ -380,7 +348,6 @@ final class DiffPanel: Panel, ObservableObject {
         cachedWorkingTreeTreeNodes = snapshot.treeNodes
         cachedWorkingTreeFilePatchesByPath = snapshot.filePatchesByPath
         cachedWorkingTreeImmediateWebViewPaths = snapshot.immediateWebViewPaths
-        cachedWorkingTreePrecomputedFullPayloadsByIdentity = snapshot.precomputedFullPayloadsByIdentity
         cachedWorkingTreeErrorMessage = snapshot.errorMessage
         cachedCommits = snapshot.commits
         cachedRepositoryRootPath = snapshot.repositoryRootPath
@@ -420,11 +387,9 @@ final class DiffPanel: Panel, ObservableObject {
             unfilteredTreeNodes = snapshot.treeNodes
             currentScopeFilePatchesByPath = snapshot.filePatchesByPath
             currentScopeImmediateWebViewPaths = snapshot.immediateWebViewPaths
-            currentScopePrecomputedFullPayloadsByIdentity = snapshot.precomputedFullPayloadsByIdentity
             reconcileSelectedFilePath(with: snapshot.files)
             errorMessage = snapshot.errorMessage
             isScopeLoading = false
-            refreshSelectedFileDiffIfNeeded(forceReload: false)
         }
     }
 
@@ -437,14 +402,12 @@ final class DiffPanel: Panel, ObservableObject {
         unfilteredTreeNodes = snapshot.treeNodes
         currentScopeFilePatchesByPath = snapshot.filePatchesByPath
         currentScopeImmediateWebViewPaths = snapshot.immediateWebViewPaths
-        currentScopePrecomputedFullPayloadsByIdentity = snapshot.precomputedFullPayloadsByIdentity
         reconcileSelectedFilePath(with: snapshot.files)
         errorMessage = snapshot.errorMessage
         isScopeLoading = false
         if !hasLoadedSnapshot {
             hasLoadedSnapshot = true
         }
-        refreshSelectedFileDiffIfNeeded(forceReload: false)
 #if DEBUG
         let totalMs: Int
         if latestCommitSelectionSHA == snapshot.sha, let latestCommitSelectionStartedAt {
@@ -464,47 +427,31 @@ final class DiffPanel: Panel, ObservableObject {
         unfilteredTreeNodes = cachedWorkingTreeTreeNodes
         currentScopeFilePatchesByPath = cachedWorkingTreeFilePatchesByPath
         currentScopeImmediateWebViewPaths = cachedWorkingTreeImmediateWebViewPaths
-        currentScopePrecomputedFullPayloadsByIdentity = cachedWorkingTreePrecomputedFullPayloadsByIdentity
         reconcileSelectedFilePath(with: cachedWorkingTreeFiles)
         errorMessage = cachedWorkingTreeErrorMessage
-        refreshSelectedFileDiffIfNeeded(forceReload: false)
     }
 
     private func reconcileSelectedFilePath(with files: [FileEntry]) {
         guard !files.isEmpty else {
             selectedFilePath = nil
             isShowingAllFiles = true
-            self.selectedFileDiff = nil
-            self.isSelectedFileDiffLoading = false
             return
         }
 
         if isShowingAllFiles {
             selectedFilePath = nil
-            self.selectedFileDiff = nil
-            self.isSelectedFileDiffLoading = false
             return
         }
 
         guard let selectedFilePath else {
             self.selectedFilePath = Self.preferredDefaultSelectedFilePath(from: files)
-            self.selectedFileDiff = nil
-            self.isSelectedFileDiffLoading = false
             return
         }
 
         guard files.contains(where: { $0.path == selectedFilePath }) else {
             self.selectedFilePath = Self.preferredDefaultSelectedFilePath(from: files)
-            self.selectedFileDiff = nil
-            self.isSelectedFileDiffLoading = false
             return
         }
-    }
-
-    private func refreshSelectedFileDiffIfNeeded(forceReload: Bool) {
-        _ = forceReload
-        selectedFileDiff = nil
-        isSelectedFileDiffLoading = false
     }
 
     func currentRenderPayload(isDarkMode: Bool) -> DiffWebViewRenderPayload? {
@@ -561,81 +508,6 @@ final class DiffPanel: Panel, ObservableObject {
         )
     }
 
-    private func loadSelectedFileDiff(for path: String, forceReload: Bool) {
-        guard let fileEntry = files.first(where: { $0.path == path }) else {
-            selectedFileDiff = nil
-            isSelectedFileDiffLoading = false
-            return
-        }
-
-        let cacheKey = selectedFileDiffCacheKey(for: path)
-        if fileEntry.isBinary {
-            selectedFileDiff = SelectedFileDiff(
-                cacheKey: cacheKey,
-                path: path,
-                oldContent: "",
-                newContent: "",
-                isBinary: true,
-                errorMessage: nil
-            )
-            isSelectedFileDiffLoading = false
-            return
-        }
-
-        if !forceReload, let selectedFileDiff, selectedFileDiff.cacheKey == cacheKey {
-            isSelectedFileDiffLoading = false
-            return
-        }
-
-        if !forceReload, let cachedSelectedFileDiff = selectedFileDiffCache[cacheKey] {
-            selectedFileDiff = cachedSelectedFileDiff
-            isSelectedFileDiffLoading = false
-            return
-        }
-
-        selectedFileLoadGeneration &+= 1
-        let generation = selectedFileLoadGeneration
-        let repositoryRootPath = repositoryRootPath
-        let selectedCommitSHA = selectedCommitSHA
-        let workingTreeStatusFingerprint = selectedCommitSHA == nil ? activeWorkingTreeStatusFingerprint : nil
-        isSelectedFileDiffLoading = true
-
-        selectedFileQueue.async {
-#if DEBUG
-            let loadStartedAt = Date()
-#endif
-            let snapshot = Self.buildSelectedFileDiff(
-                repositoryRootPath: repositoryRootPath,
-                path: path,
-                selectedCommitSHA: selectedCommitSHA,
-                workingTreeStatusFingerprint: workingTreeStatusFingerprint
-            )
-
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                guard generation == self.selectedFileLoadGeneration else { return }
-                guard self.selectedFilePath == path else { return }
-                guard snapshot.cacheKey == self.selectedFileDiffCacheKey(for: path) else { return }
-                self.selectedFileDiffCache[snapshot.cacheKey] = snapshot
-                self.selectedFileDiff = snapshot
-                self.isSelectedFileDiffLoading = false
-#if DEBUG
-                let elapsedMs = Int(Date().timeIntervalSince(loadStartedAt) * 1000)
-                dlog(
-                    "diff.selectedFile.apply path=\(path) commit=\(selectedCommitSHA ?? "working-tree") ms=\(elapsedMs) oldBytes=\(snapshot.oldContent.utf8.count) newBytes=\(snapshot.newContent.utf8.count) error=\(snapshot.errorMessage == nil ? "0" : "1")"
-                )
-#endif
-            }
-        }
-    }
-
-    private func selectedFileDiffCacheKey(for path: String) -> String {
-        if let selectedCommitSHA {
-            return "commit:\(selectedCommitSHA):\(path)"
-        }
-        return "working-tree:\(activeWorkingTreeStatusFingerprint):\(path)"
-    }
-
     private nonisolated static func workingTreeSnapshot(
         for sourcePath: String,
         previousStatusFingerprint: String,
@@ -660,7 +532,7 @@ final class DiffPanel: Panel, ObservableObject {
                 treeNodes: [],
                 filePatchesByPath: [:],
                 immediateWebViewPaths: [],
-                precomputedFullPayloadsByIdentity: [:],
+
                 commits: [],
                 errorMessage: repositoryRootResolution?.stderr?.trimmingCharacters(in: .whitespacesAndNewlines)
                     ?? repositoryRootResolution?.executionError
@@ -684,7 +556,7 @@ final class DiffPanel: Panel, ObservableObject {
                 treeNodes: [],
                 filePatchesByPath: [:],
                 immediateWebViewPaths: [],
-                precomputedFullPayloadsByIdentity: [:],
+
                 commits: commits,
                 errorMessage: statusResult?.stderr?.trimmingCharacters(in: .whitespacesAndNewlines)
             )
@@ -700,7 +572,7 @@ final class DiffPanel: Panel, ObservableObject {
                 treeNodes: [],
                 filePatchesByPath: [:],
                 immediateWebViewPaths: [],
-                precomputedFullPayloadsByIdentity: [:],
+
                 commits: commits,
                 errorMessage: nil
             )
@@ -720,14 +592,6 @@ final class DiffPanel: Panel, ObservableObject {
                 treeNodes: treeNodes(from: previousFiles),
                 filePatchesByPath: filePatchesByPath,
                 immediateWebViewPaths: immediateWebViewPaths,
-                precomputedFullPayloadsByIdentity: precomputedFullPayloads(
-                    scopeIdentity: "working-tree:\(statusFingerprint)",
-                    patch: previousPatch,
-                    selectedFilePath: nil,
-                    orderedSelectedFilePaths: previousFiles.map(\.path),
-                    filePatchesByPath: filePatchesByPath,
-                    isDarkMode: preferredWebViewIsDarkMode
-                ),
                 commits: commits,
                 errorMessage: nil
             )
@@ -747,14 +611,6 @@ final class DiffPanel: Panel, ObservableObject {
                 treeNodes: treeNodes(from: files),
                 filePatchesByPath: filePatchesByPath,
                 immediateWebViewPaths: immediateWebViewPaths,
-                precomputedFullPayloadsByIdentity: precomputedFullPayloads(
-                    scopeIdentity: "working-tree:\(statusFingerprint)",
-                    patch: patch,
-                    selectedFilePath: nil,
-                    orderedSelectedFilePaths: files.map(\.path),
-                    filePatchesByPath: filePatchesByPath,
-                    isDarkMode: preferredWebViewIsDarkMode
-                ),
                 commits: commits,
                 errorMessage: nil
             )
@@ -767,7 +623,7 @@ final class DiffPanel: Panel, ObservableObject {
                 treeNodes: [],
                 filePatchesByPath: [:],
                 immediateWebViewPaths: [],
-                precomputedFullPayloadsByIdentity: [:],
+
                 commits: commits,
                 errorMessage: (error as? LocalizedError)?.errorDescription
             )
@@ -829,14 +685,6 @@ final class DiffPanel: Panel, ObservableObject {
                 treeNodes: treeNodes(from: files),
                 filePatchesByPath: filePatchesByPath,
                 immediateWebViewPaths: immediateWebViewPaths,
-                precomputedFullPayloadsByIdentity: precomputedFullPayloads(
-                    scopeIdentity: "commit:\(normalizedSHA)",
-                    patch: patch,
-                    selectedFilePath: defaultSelectedFilePath,
-                    orderedSelectedFilePaths: files.map(\.path),
-                    filePatchesByPath: filePatchesByPath,
-                    isDarkMode: preferredWebViewIsDarkMode
-                ),
                 errorMessage: nil
             )
         } catch {
@@ -847,7 +695,7 @@ final class DiffPanel: Panel, ObservableObject {
                 treeNodes: [],
                 filePatchesByPath: [:],
                 immediateWebViewPaths: [],
-                precomputedFullPayloadsByIdentity: [:],
+
                 errorMessage: (error as? LocalizedError)?.errorDescription
             )
         }
@@ -964,14 +812,6 @@ final class DiffPanel: Panel, ObservableObject {
             treeNodes: treeNodes(from: files),
             filePatchesByPath: filePatchesByPath,
             immediateWebViewPaths: immediateWebViewPaths,
-            precomputedFullPayloadsByIdentity: precomputedFullPayloads(
-                scopeIdentity: "commit:\(sha)",
-                patch: patch,
-                selectedFilePath: defaultSelectedFilePath,
-                orderedSelectedFilePaths: files.map(\.path),
-                filePatchesByPath: filePatchesByPath,
-                isDarkMode: preferredWebViewIsDarkMode
-            ),
             errorMessage: nil
         )
     }
@@ -1362,23 +1202,6 @@ final class DiffPanel: Panel, ObservableObject {
         )
     }
 
-    private nonisolated static func precomputedFullPayloads(
-        scopeIdentity: String,
-        patch: String,
-        selectedFilePath: String?,
-        orderedSelectedFilePaths: [String],
-        filePatchesByPath: [String: String],
-        isDarkMode: Bool
-    ) -> [String: DiffWebViewCachedFullPayload] {
-        _ = scopeIdentity
-        _ = patch
-        _ = selectedFilePath
-        _ = orderedSelectedFilePaths
-        _ = filePatchesByPath
-        _ = isDarkMode
-        return [:]
-    }
-
     private nonisolated static func preferredDefaultSelectedFilePath(from files: [FileEntry]) -> String? {
         preferredSelectedFilePaths(from: files, limit: 1).first
     }
@@ -1403,322 +1226,11 @@ final class DiffPanel: Panel, ObservableObject {
             .map(\.path)
     }
 
-    private nonisolated static func buildSelectedFileDiff(
-        repositoryRootPath: String,
-        path: String,
-        selectedCommitSHA: String?,
-        workingTreeStatusFingerprint: String?
-    ) -> SelectedFileDiff {
-        let cacheKey: String
-        if let selectedCommitSHA {
-            cacheKey = "commit:\(selectedCommitSHA):\(path)"
-            return selectedCommitFileDiff(
-                repositoryRootPath: repositoryRootPath,
-                path: path,
-                sha: selectedCommitSHA,
-                cacheKey: cacheKey
-            )
-        }
-
-        cacheKey = "working-tree:\(workingTreeStatusFingerprint ?? ""):\(path)"
-        return workingTreeFileDiff(
-            repositoryRootPath: repositoryRootPath,
-            path: path,
-            cacheKey: cacheKey
-        )
-    }
-
-    private nonisolated static func selectedCommitFileDiff(
-        repositoryRootPath: String,
-        path: String,
-        sha: String,
-        cacheKey: String
-    ) -> SelectedFileDiff {
-        let normalizedSHA = normalizedRevision(sha)
-#if canImport(libgit2)
-        if let snapshot = try? libgit2SelectedCommitFileDiff(
-            repositoryRootPath: repositoryRootPath,
-            path: path,
-            sha: normalizedSHA,
-            cacheKey: cacheKey
-        ) {
-            return snapshot
-        }
-#endif
-        do {
-            let parentRevision = firstParentRevision(
-                directory: repositoryRootPath,
-                revision: normalizedSHA
-            )
-            let oldContent = try gitFileContentIfPresent(
-                directory: repositoryRootPath,
-                revision: parentRevision,
-                path: path
-            ) ?? ""
-            let newContent = try gitFileContentIfPresent(
-                directory: repositoryRootPath,
-                revision: normalizedSHA,
-                path: path
-            ) ?? ""
-            return SelectedFileDiff(
-                cacheKey: cacheKey,
-                path: path,
-                oldContent: oldContent,
-                newContent: newContent,
-                isBinary: false,
-                errorMessage: nil
-            )
-        } catch {
-            return SelectedFileDiff(
-                cacheKey: cacheKey,
-                path: path,
-                oldContent: "",
-                newContent: "",
-                isBinary: false,
-                errorMessage: (error as? LocalizedError)?.errorDescription
-            )
-        }
-    }
-
-#if canImport(libgit2)
-    private nonisolated static func libgit2SelectedCommitFileDiff(
-        repositoryRootPath: String,
-        path: String,
-        sha: String,
-        cacheKey: String
-    ) throws -> SelectedFileDiff {
-        _ = libgit2Bootstrap
-
-        var repositoryPointer: OpaquePointer?
-        var commitPointer: OpaquePointer?
-        var parentCommitPointer: OpaquePointer?
-        var newTreePointer: OpaquePointer?
-        var oldTreePointer: OpaquePointer?
-
-        defer {
-            git_tree_free(oldTreePointer)
-            git_tree_free(newTreePointer)
-            git_commit_free(parentCommitPointer)
-            git_commit_free(commitPointer)
-            git_repository_free(repositoryPointer)
-        }
-
-        try requireLibgit2(
-            git_repository_open(&repositoryPointer, repositoryRootPath),
-            operation: "Failed to open repository"
-        )
-        guard let repositoryPointer else {
-            throw Libgit2Error(message: "Failed to open repository")
-        }
-
-        var commitOID = git_oid()
-        try requireLibgit2(
-            git_oid_fromstrp(&commitOID, sha),
-            operation: "Failed to parse commit revision"
-        )
-        try requireLibgit2(
-            git_commit_lookup(&commitPointer, repositoryPointer, &commitOID),
-            operation: "Failed to load commit"
-        )
-        guard let commitPointer else {
-            throw Libgit2Error(message: "Failed to load commit")
-        }
-
-        try requireLibgit2(
-            git_commit_tree(&newTreePointer, commitPointer),
-            operation: "Failed to load commit tree"
-        )
-
-        if git_commit_parentcount(commitPointer) > 0 {
-            try requireLibgit2(
-                git_commit_parent(&parentCommitPointer, commitPointer, 0),
-                operation: "Failed to load parent commit"
-            )
-
-            if let parentCommitPointer {
-                try requireLibgit2(
-                    git_commit_tree(&oldTreePointer, parentCommitPointer),
-                    operation: "Failed to load parent tree"
-                )
-            }
-        }
-
-        let oldContent = try libgit2BlobContentIfPresent(
-            repositoryPointer: repositoryPointer,
-            treePointer: oldTreePointer,
-            path: path
-        ) ?? ""
-        let newContent = try libgit2BlobContentIfPresent(
-            repositoryPointer: repositoryPointer,
-            treePointer: newTreePointer,
-            path: path
-        ) ?? ""
-
-        return SelectedFileDiff(
-            cacheKey: cacheKey,
-            path: path,
-            oldContent: oldContent,
-            newContent: newContent,
-            isBinary: false,
-            errorMessage: nil
-        )
-    }
-
-    private nonisolated static func libgit2BlobContentIfPresent(
-        repositoryPointer: OpaquePointer,
-        treePointer: OpaquePointer?,
-        path: String
-    ) throws -> String? {
-        guard let treePointer else { return nil }
-
-        var treeEntryPointer: OpaquePointer?
-        let entryResult = git_tree_entry_bypath(&treeEntryPointer, treePointer, path)
-        if entryResult == GIT_ENOTFOUND.rawValue {
-            return nil
-        }
-        try requireLibgit2(
-            entryResult,
-            operation: "Failed to resolve file in tree"
-        )
-        guard let treeEntryPointer else { return nil }
-        defer { git_tree_entry_free(treeEntryPointer) }
-
-        var blobPointer: OpaquePointer?
-        defer { git_blob_free(blobPointer) }
-        try requireLibgit2(
-            git_blob_lookup(&blobPointer, repositoryPointer, git_tree_entry_id(treeEntryPointer)),
-            operation: "Failed to load file blob"
-        )
-        guard let blobPointer else { return nil }
-
-        let rawSize = git_blob_rawsize(blobPointer)
-        guard rawSize > 0 else { return "" }
-        guard let rawContent = git_blob_rawcontent(blobPointer) else { return "" }
-
-        return String(
-            decoding: UnsafeRawBufferPointer(
-                start: rawContent,
-                count: Int(rawSize)
-            ),
-            as: UTF8.self
-        )
-    }
-#endif
-
-    private nonisolated static func workingTreeFileDiff(
-        repositoryRootPath: String,
-        path: String,
-        cacheKey: String
-    ) -> SelectedFileDiff {
-        do {
-            let oldContent: String
-            if hasResolvableHead(directory: repositoryRootPath) {
-                oldContent = try gitFileContentIfPresent(
-                    directory: repositoryRootPath,
-                    revision: "HEAD",
-                    path: path
-                ) ?? ""
-            } else {
-                oldContent = ""
-            }
-
-            let newContent = try fileContentIfPresent(
-                directory: repositoryRootPath,
-                relativePath: path
-            ) ?? ""
-
-            return SelectedFileDiff(
-                cacheKey: cacheKey,
-                path: path,
-                oldContent: oldContent,
-                newContent: newContent,
-                isBinary: false,
-                errorMessage: nil
-            )
-        } catch {
-            return SelectedFileDiff(
-                cacheKey: cacheKey,
-                path: path,
-                oldContent: "",
-                newContent: "",
-                isBinary: false,
-                errorMessage: (error as? LocalizedError)?.errorDescription
-            )
-        }
-    }
-
     private nonisolated static func untrackedRepositoryPaths(directory: String) throws -> [String] {
         try repositoryPaths(
             directory: directory,
             arguments: ["ls-files", "--others", "--exclude-standard", "-z"]
         )
-    }
-
-    private nonisolated static func firstParentRevision(
-        directory: String,
-        revision: String
-    ) -> String? {
-        let result = runGitCommandResult(
-            directory: directory,
-            arguments: ["rev-parse", "--verify", "-q", "\(revision)^"]
-        )
-        guard result?.timedOut == false,
-              result?.executionError == nil,
-              result?.exitStatus == 0,
-              let stdout = result?.stdout?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !stdout.isEmpty else {
-            return nil
-        }
-        return stdout
-    }
-
-    private nonisolated static func gitFileContentIfPresent(
-        directory: String,
-        revision: String?,
-        path: String
-    ) throws -> String? {
-        guard let revision else { return nil }
-
-        let result = runGitCommandResult(
-            directory: directory,
-            arguments: ["show", "\(revision):\(path)"]
-        )
-        if result?.timedOut == true {
-            throw CommandError(message: nil)
-        }
-        if let executionError = result?.executionError {
-            throw CommandError(message: executionError)
-        }
-        guard let result else {
-            throw CommandError(message: nil)
-        }
-        if result.exitStatus == 0 {
-            return result.stdout ?? ""
-        }
-        let stderr = result.stderr?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if stderr.contains("exists on disk, but not in"),
-           stderr.contains(path) {
-            return nil
-        }
-        if stderr.contains("does not exist in"),
-           stderr.contains(path) {
-            return nil
-        }
-        if stderr.contains("invalid object name") {
-            return nil
-        }
-        throw CommandError(message: stderr.isEmpty ? nil : stderr)
-    }
-
-    private nonisolated static func fileContentIfPresent(
-        directory: String,
-        relativePath: String
-    ) throws -> String? {
-        let fileURL = URL(fileURLWithPath: directory)
-            .appendingPathComponent(relativePath)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        let data = try Data(contentsOf: fileURL)
-        return String(decoding: data, as: UTF8.self)
     }
 
     private nonisolated static func repositoryPaths(

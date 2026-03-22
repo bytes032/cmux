@@ -59,23 +59,6 @@ final class DiffPanelTreeContext {
     }
 }
 
-final class DiffSelectedFileWebPayloadContext {
-    func payload(
-        scopePatch: String,
-        scopeIdentity: String,
-        selectedFilePath: String,
-        isDarkMode: Bool
-    ) -> DiffWebViewRenderPayload {
-        _ = scopePatch
-        return DiffWebViewRenderPayload(
-            files: [],
-            selectedFilePath: selectedFilePath,
-            isDarkMode: isDarkMode,
-            cacheIdentity: "\(scopeIdentity)|file:\(selectedFilePath)"
-        )
-    }
-}
-
 struct DiffPatchFileIndex: Sendable {
     let originalPatch: String
     private let offsetsByPath: [String: (start: Int, end: Int)]
@@ -247,72 +230,12 @@ enum DiffPatchSelector {
         )
     }
 
-    fileprivate static func diffHeaderPath<S: StringProtocol>(_ line: S) -> String? {
-        let utf8 = line.utf8
-        let space = UInt8(ascii: " ")
-        var spaceCount = 0
-        var fourthTokenStart: S.UTF8View.Index?
-        var i = utf8.startIndex
-        while i < utf8.endIndex {
-            if utf8[i] == space {
-                spaceCount += 1
-                let nextIndex = utf8.index(after: i)
-                if spaceCount == 3 { fourthTokenStart = nextIndex; break }
-            }
-            i = utf8.index(after: i)
-        }
-        if let fourthStart = fourthTokenStart, fourthStart < utf8.endIndex {
-            let remaining = String(line[fourthStart..<line.endIndex])
-            if remaining.utf8.count >= 2,
-               (remaining.hasPrefix("a/") || remaining.hasPrefix("b/")) {
-                let stripped = String(remaining.dropFirst(2))
-                if !stripped.isEmpty { return stripped }
-            }
-            if !remaining.isEmpty { return remaining }
-        }
-        return nil
-    }
-
     fileprivate static func normalizePatchPath(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("a/") || trimmed.hasPrefix("b/") {
             return String(trimmed.dropFirst(2))
         }
         return trimmed
-    }
-}
-
-enum DiffPatchRenderProxy {
-    static func selectedFileRenderWork(
-        patch: String,
-        selectedFilePath: String?
-    ) -> Int {
-        guard !patch.isEmpty else { return 0 }
-        guard let selectedFilePath else { return patch.utf8.count }
-
-        let normalizedTarget = DiffPatchSelector.normalizePatchPath(selectedFilePath)
-        var currentPath: String?
-        var currentBytes = 0
-        var matchedBytes = 0
-
-        for line in patch.split(separator: "\n", omittingEmptySubsequences: false) {
-            let stringLine = String(line)
-            if stringLine.hasPrefix("diff --git ") {
-                if currentPath == normalizedTarget {
-                    matchedBytes += currentBytes
-                }
-                currentPath = DiffPatchSelector.diffHeaderPath(stringLine)
-                currentBytes = stringLine.utf8.count + 1
-            } else {
-                currentBytes += stringLine.utf8.count + 1
-            }
-        }
-
-        if currentPath == normalizedTarget {
-            matchedBytes += currentBytes
-        }
-
-        return matchedBytes
     }
 }
 
@@ -460,30 +383,6 @@ enum DiffPanelTreeBuilder {
     }
 }
 
-/// Caches built render payloads by cacheIdentity to avoid re-parsing patches
-/// on every SwiftUI body evaluation. Invalidated when scope changes.
-final class DiffRenderPayloadCache {
-    private var cache: [String: DiffWebViewRenderPayload] = [:]
-
-    func get(_ cacheIdentity: String) -> DiffWebViewRenderPayload? {
-        cache[cacheIdentity]
-    }
-
-    func set(_ payload: DiffWebViewRenderPayload) {
-        cache[payload.cacheIdentity] = payload
-    }
-
-    func invalidate() {
-        cache.removeAll()
-    }
-}
-
-struct DiffWebViewCachedFullPayload: Equatable, Sendable {
-    let cacheIdentity: String
-    let javaScript: String
-    let encodedBytes: Int
-}
-
 struct DiffWebViewRenderableLine: Encodable, Equatable, Sendable {
     let kind: String
     /// Line text content. Stored as Substring to share backing storage with the original patch,
@@ -534,21 +433,6 @@ struct DiffWebViewRenderPayload: Encodable, Sendable {
     let selectedFilePath: String?
     let isDarkMode: Bool
     let cacheIdentity: String
-    let precomputedFullPayload: DiffWebViewCachedFullPayload?
-
-    init(
-        files: [DiffWebViewRenderableFile],
-        selectedFilePath: String?,
-        isDarkMode: Bool,
-        cacheIdentity: String,
-        precomputedFullPayload: DiffWebViewCachedFullPayload? = nil
-    ) {
-        self.files = files
-        self.selectedFilePath = selectedFilePath
-        self.isDarkMode = isDarkMode
-        self.cacheIdentity = cacheIdentity
-        self.precomputedFullPayload = precomputedFullPayload
-    }
 
     private enum CodingKeys: String, CodingKey {
         case files
@@ -958,20 +842,11 @@ final class DiffWebViewUpdateContext {
             )
         }
 
-        let cached: CachedFullPayload
-        if let precomputed = payload.precomputedFullPayload,
-           precomputed.cacheIdentity == payload.cacheIdentity {
-            cached = CachedFullPayload(
-                javaScript: precomputed.javaScript,
-                encodedBytes: precomputed.encodedBytes
-            )
-        } else {
-            let json = DiffWebViewUpdatePlanner.fastEncodePayload(payload)
-            cached = CachedFullPayload(
-                javaScript: "window.cmuxReceiveDiffPayload(\(json));",
-                encodedBytes: json.utf8.count
-            )
-        }
+        let json = DiffWebViewUpdatePlanner.fastEncodePayload(payload)
+        let cached = CachedFullPayload(
+            javaScript: "window.cmuxReceiveDiffPayload(\(json));",
+            encodedBytes: json.utf8.count
+        )
         fullPayloadJSONCache[payload.cacheIdentity] = cached
 
         return DiffWebViewJavaScriptUpdate(

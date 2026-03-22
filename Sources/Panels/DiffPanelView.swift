@@ -658,8 +658,12 @@ struct DiffPanelView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var normalizedFilterQuery: String {
+        fileFilterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var fileTreeNodes: [FileTreeNode] {
-        let query = fileFilterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = normalizedFilterQuery
         if query.isEmpty {
             return panel.unfilteredTreeNodes
         }
@@ -682,7 +686,7 @@ struct DiffPanelView: View {
     }
 
     private var filteredSearchResults: [SearchableFileEntry] {
-        let query = fileFilterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = normalizedFilterQuery
         guard !query.isEmpty else { return searchableFiles }
 
         let normalizedQuery = query.localizedLowercase
@@ -693,7 +697,7 @@ struct DiffPanelView: View {
     }
 
     private var treeCacheKey: String {
-        let query = fileFilterQuery.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
+        let query = normalizedFilterQuery.localizedLowercase
         return "\(panel.currentTreeCacheKey)|\(query)"
     }
 
