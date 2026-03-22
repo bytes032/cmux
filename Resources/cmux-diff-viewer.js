@@ -24,7 +24,8 @@ function ensureHighlightWorker() {
       const startedAt = performance.now();
       const highlightedLines = payload.lines ?? [];
       for (const line of highlightedLines) {
-        const node = document.querySelector(`[data-highlight-id="${cssEscape(line.id)}"]`);
+        // Use getElementById for O(1) lookup instead of querySelector with attribute selector (O(n))
+        const node = document.getElementById(`hl-${line.id}`);
         if (!node) {
           continue;
         }
@@ -69,12 +70,21 @@ window.cmuxDiffRender = function(payload) {
       return;
     }
 
-    const highlightLines = [];
+    // Best practice: build all DOM nodes into a DocumentFragment first,
+    // then append once to avoid layout thrashing from per-file appendChild.
+    const fragment = document.createDocumentFragment();
+    const perFileHighlightLines = []; // [{language, lines}] per file
     files.forEach((file, fileIndex) => {
       const result = renderFile(file, fileIndex, files.length);
-      root.appendChild(result.element);
-      highlightLines.push(...result.highlightLines);
+      fragment.appendChild(result.element);
+      if (result.highlightLines.length > 0) {
+        perFileHighlightLines.push({
+          language: file.language ?? "plain",
+          lines: result.highlightLines,
+        });
+      }
     });
+    root.appendChild(fragment);
 
     const renderDurationMs = roundMs(performance.now() - renderStartedAt);
     reportPerf({
@@ -96,16 +106,20 @@ window.cmuxDiffRender = function(payload) {
         });
       });
     });
+    // Request syntax highlighting for all files (not just single-file mode).
+    // Send per-file batches so the worker processes them incrementally.
     currentHighlightRequestId += 1;
     const highlightWorker = ensureHighlightWorker();
-    if (highlightWorker && highlightLines.length > 0 && files.length === 1) {
-      highlightWorker.postMessage({
-        requestId: currentHighlightRequestId,
-        renderToken,
-        language: files[0]?.language ?? "plain",
-        lines: highlightLines,
-        fileCount: files.length,
-      });
+    if (highlightWorker && perFileHighlightLines.length > 0) {
+      for (const batch of perFileHighlightLines) {
+        highlightWorker.postMessage({
+          requestId: currentHighlightRequestId,
+          renderToken,
+          language: batch.language,
+          lines: batch.lines,
+          fileCount: files.length,
+        });
+      }
     }
   } catch (error) {
     console.error("cmux diff render failed", error);
@@ -187,7 +201,7 @@ function renderFile(file, fileIndex, totalFiles) {
         codeInner.innerHTML = wordDiffMarkup.get(wordDiffKey);
       } else {
         codeInner.textContent = line.text;
-        codeInner.dataset.highlightId = highlightId;
+        codeInner.id = `hl-${highlightId}`;
         highlightLines.push({
           id: highlightId,
           text: line.text,

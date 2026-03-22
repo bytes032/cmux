@@ -872,9 +872,11 @@ enum DiffWebViewUpdatePlanner {
         }
         guard previous != next else { return nil }
 
-        if previous.files == next.files,
-           previous.selectedFilePath == next.selectedFilePath,
-           previous.isDarkMode != next.isDarkMode {
+        // Detect theme-only change: same scope/selection, different isDarkMode.
+        // cacheIdentity encodes scope key + selection but not theme, so equal
+        // identities with differing isDarkMode means only the theme changed.
+        if previous.isDarkMode != next.isDarkMode,
+           previous.cacheIdentity == next.cacheIdentity {
             let literal = next.isDarkMode ? "true" : "false"
             return DiffWebViewJavaScriptUpdate(
                 kind: "theme",
