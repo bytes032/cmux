@@ -642,6 +642,7 @@ struct DiffPanelView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
+            .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(isSelected ? cmuxAccentColor().opacity(0.14) : Color.clear)

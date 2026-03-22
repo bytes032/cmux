@@ -129,7 +129,7 @@ enum DiffPatchSelector {
             return DiffPatchFileIndex(originalPatch: patch, offsetsByPath: [:], immediateWebViewPaths: [])
         }
 
-        var rangesByOffset: [(path: String, startOffset: Int, endOffset: Int)] = []
+        var offsetsByPath: [String: (start: Int, end: Int)] = [:]
         var immediateWebViewPaths: Set<String> = []
         var currentPath: String?
         var currentSectionStartOffset = 0
@@ -149,7 +149,7 @@ enum DiffPatchSelector {
 
             func flushSection(until endOffset: Int) {
                 guard let path = currentPath, currentSectionStartOffset < endOffset else { return }
-                rangesByOffset.append((path: path, startOffset: currentSectionStartOffset, endOffset: endOffset))
+                offsetsByPath[path] = (start: currentSectionStartOffset, end: endOffset)
                 if currentContentBytes > DiffSelectedFileRouteDecider.fastRendererByteThreshold {
                     immediateWebViewPaths.insert(path)
                 }
@@ -233,17 +233,11 @@ enum DiffPatchSelector {
 
             // Flush final section
             if currentPath != nil {
-                rangesByOffset.append((path: currentPath!, startOffset: currentSectionStartOffset, endOffset: count))
+                offsetsByPath[currentPath!] = (start: currentSectionStartOffset, end: count)
                 if currentContentBytes > DiffSelectedFileRouteDecider.fastRendererByteThreshold {
                     immediateWebViewPaths.insert(currentPath!)
                 }
             }
-        }
-
-        var offsetsByPath: [String: (start: Int, end: Int)] = [:]
-        offsetsByPath.reserveCapacity(rangesByOffset.count)
-        for entry in rangesByOffset {
-            offsetsByPath[entry.path] = (start: entry.startOffset, end: entry.endOffset)
         }
 
         return DiffPatchFileIndex(
@@ -466,6 +460,24 @@ enum DiffPanelTreeBuilder {
     }
 }
 
+/// Caches built render payloads by cacheIdentity to avoid re-parsing patches
+/// on every SwiftUI body evaluation. Invalidated when scope changes.
+final class DiffRenderPayloadCache {
+    private var cache: [String: DiffWebViewRenderPayload] = [:]
+
+    func get(_ cacheIdentity: String) -> DiffWebViewRenderPayload? {
+        cache[cacheIdentity]
+    }
+
+    func set(_ payload: DiffWebViewRenderPayload) {
+        cache[payload.cacheIdentity] = payload
+    }
+
+    func invalidate() {
+        cache.removeAll()
+    }
+}
+
 struct DiffWebViewCachedFullPayload: Equatable, Sendable {
     let cacheIdentity: String
     let javaScript: String
@@ -474,10 +486,25 @@ struct DiffWebViewCachedFullPayload: Equatable, Sendable {
 
 struct DiffWebViewRenderableLine: Encodable, Equatable, Sendable {
     let kind: String
-    let text: String
+    /// Line text content. Stored as Substring to share backing storage with the original patch,
+    /// avoiding per-line String allocation during payload construction.
+    let text: Substring
     let oldLineNumber: Int?
     let newLineNumber: Int?
     let isNoNewlineMarker: Bool
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(String(text), forKey: .text)
+        try container.encode(oldLineNumber, forKey: .oldLineNumber)
+        try container.encode(newLineNumber, forKey: .newLineNumber)
+        try container.encode(isNoNewlineMarker, forKey: .isNoNewlineMarker)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, text, oldLineNumber, newLineNumber, isNoNewlineMarker
+    }
 }
 
 struct DiffWebViewRenderableHunk: Encodable, Equatable, Sendable {
@@ -502,7 +529,7 @@ struct DiffWebViewRenderableFile: Encodable, Equatable, Sendable {
     let hunks: [DiffWebViewRenderableHunk]
 }
 
-struct DiffWebViewRenderPayload: Encodable, Equatable, Sendable {
+struct DiffWebViewRenderPayload: Encodable, Sendable {
     let files: [DiffWebViewRenderableFile]
     let selectedFilePath: String?
     let isDarkMode: Bool
@@ -527,6 +554,16 @@ struct DiffWebViewRenderPayload: Encodable, Equatable, Sendable {
         case files
         case selectedFilePath
         case isDarkMode
+    }
+}
+
+extension DiffWebViewRenderPayload: Equatable {
+    /// Compare by cacheIdentity + isDarkMode only. The cacheIdentity encodes all inputs
+    /// that determine the file content (scope key, selected file, theme). This avoids
+    /// the O(n × lines) deep comparison of all DiffWebViewRenderableFile/Hunk/Line arrays
+    /// that was wasting ~54ms on every SwiftUI re-evaluation.
+    static func == (lhs: DiffWebViewRenderPayload, rhs: DiffWebViewRenderPayload) -> Bool {
+        lhs.cacheIdentity == rhs.cacheIdentity && lhs.isDarkMode == rhs.isDarkMode
     }
 }
 
@@ -610,7 +647,7 @@ enum DiffWebViewFileBuilder {
             self.lines = []
         }
 
-        mutating func appendContextLine(_ text: String) {
+        mutating func appendContextLine(_ text: Substring) {
             lines.append(
                 DiffWebViewRenderableLine(
                     kind: "context",
@@ -624,7 +661,7 @@ enum DiffWebViewFileBuilder {
             nextNewLine += 1
         }
 
-        mutating func appendDeletionLine(_ text: String) {
+        mutating func appendDeletionLine(_ text: Substring) {
             lines.append(
                 DiffWebViewRenderableLine(
                     kind: "deletion",
@@ -637,7 +674,7 @@ enum DiffWebViewFileBuilder {
             nextOldLine += 1
         }
 
-        mutating func appendAdditionLine(_ text: String) {
+        mutating func appendAdditionLine(_ text: Substring) {
             lines.append(
                 DiffWebViewRenderableLine(
                     kind: "addition",
@@ -650,7 +687,7 @@ enum DiffWebViewFileBuilder {
             nextNewLine += 1
         }
 
-        mutating func appendNoNewlineMarker(_ text: String) {
+        mutating func appendNoNewlineMarker(_ text: Substring) {
             lines.append(
                 DiffWebViewRenderableLine(
                     kind: "note",
@@ -674,13 +711,15 @@ enum DiffWebViewFileBuilder {
         }
     }
 
-    private static let hunkHeaderRegex = try? NSRegularExpression(
-        pattern: #"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"#,
-        options: []
-    )
+    struct FileInput {
+        let path: String
+        let additions: Int
+        let deletions: Int
+        let isBinary: Bool
+    }
 
     static func build(
-        fileEntry: DiffPanel.FileEntry,
+        fileEntry: FileInput,
         filePatch: String
     ) -> DiffWebViewRenderableFile {
         var oldPath: String?
@@ -695,89 +734,134 @@ enum DiffWebViewFileBuilder {
             hunks.append(currentHunk.build())
         }
 
-        for line in filePatch.split(separator: "\n", omittingEmptySubsequences: false) {
-            let stringLine = String(line)
+        filePatch.utf8.withContiguousStorageIfAvailable { utf8 in
+            let count = utf8.count
+            guard count > 0 else { return }
+            let base = utf8.baseAddress!
+            let rawBase = UnsafeRawPointer(base)
+            var pos = 0
 
-            if stringLine.hasPrefix("diff --git ") {
-                let parts = stringLine.split(separator: " ", omittingEmptySubsequences: false)
-                if parts.count >= 4 {
-                    oldPath = DiffPatchSelector.normalizePatchPath(String(parts[2]))
-                    newPath = DiffPatchSelector.normalizePatchPath(String(parts[3]))
+            while pos < count {
+                let nlResult = memchr(rawBase + pos, Int32(0x0A), count - pos)
+                let lineEnd: Int
+                if let nlPtr = nlResult {
+                    lineEnd = base.distance(to: nlPtr.assumingMemoryBound(to: UInt8.self))
+                } else {
+                    lineEnd = count
                 }
-                continue
-            }
 
-            if stringLine.hasPrefix("new file mode ") {
-                changeType = "added"
-                continue
-            }
+                let lineLen = lineEnd - pos
+                guard lineLen > 0 else {
+                    pos = lineEnd + 1
+                    continue
+                }
 
-            if stringLine.hasPrefix("deleted file mode ") {
-                changeType = "deleted"
-                continue
-            }
+                let firstByte = base[pos]
 
-            if stringLine.hasPrefix("rename from ") {
-                changeType = "renamed"
-                oldPath = DiffPatchSelector.normalizePatchPath(String(stringLine.dropFirst("rename from ".count)))
-                continue
-            }
+                // Diff metadata: diff --git, ---, +++, new file, deleted file, rename, copy, Binary
+                if firstByte == UInt8(ascii: "d") {
+                    if lineLen >= 11 && base[pos+1] == 0x69 && base[pos+2] == 0x66 && base[pos+3] == 0x66 && base[pos+4] == 0x20 && base[pos+5] == 0x2D && base[pos+6] == 0x2D {
+                        // "diff --git " — extract paths
+                        let lineStr = String(decoding: UnsafeBufferPointer(start: base + pos, count: lineLen), as: UTF8.self)
+                        let parts = lineStr.split(separator: " ", omittingEmptySubsequences: false)
+                        if parts.count >= 4 {
+                            oldPath = DiffPatchSelector.normalizePatchPath(String(parts[2]))
+                            newPath = DiffPatchSelector.normalizePatchPath(String(parts[3]))
+                        }
+                        pos = lineEnd + 1; continue
+                    }
+                    if lineLen >= 18 && base[pos+1] == 0x65 { // "deleted file mode "
+                        changeType = "deleted"; pos = lineEnd + 1; continue
+                    }
+                }
 
-            if stringLine.hasPrefix("rename to ") {
-                changeType = "renamed"
-                newPath = DiffPatchSelector.normalizePatchPath(String(stringLine.dropFirst("rename to ".count)))
-                continue
-            }
+                if firstByte == UInt8(ascii: "n") && lineLen >= 14 && base[pos+1] == 0x65 && base[pos+2] == 0x77 {
+                    changeType = "added"; pos = lineEnd + 1; continue
+                }
 
-            if stringLine.hasPrefix("copy from ") {
-                changeType = "copied"
-                oldPath = DiffPatchSelector.normalizePatchPath(String(stringLine.dropFirst("copy from ".count)))
-                continue
-            }
+                if firstByte == UInt8(ascii: "r") && lineLen >= 10 {
+                    let lineStr = String(decoding: UnsafeBufferPointer(start: base + pos, count: lineLen), as: UTF8.self)
+                    if lineStr.hasPrefix("rename from ") {
+                        changeType = "renamed"
+                        oldPath = DiffPatchSelector.normalizePatchPath(String(lineStr.dropFirst(12)))
+                        pos = lineEnd + 1; continue
+                    }
+                    if lineStr.hasPrefix("rename to ") {
+                        changeType = "renamed"
+                        newPath = DiffPatchSelector.normalizePatchPath(String(lineStr.dropFirst(10)))
+                        pos = lineEnd + 1; continue
+                    }
+                }
 
-            if stringLine.hasPrefix("copy to ") {
-                changeType = "copied"
-                newPath = DiffPatchSelector.normalizePatchPath(String(stringLine.dropFirst("copy to ".count)))
-                continue
-            }
+                if firstByte == UInt8(ascii: "c") && lineLen >= 8 {
+                    let lineStr = String(decoding: UnsafeBufferPointer(start: base + pos, count: lineLen), as: UTF8.self)
+                    if lineStr.hasPrefix("copy from ") {
+                        changeType = "copied"
+                        oldPath = DiffPatchSelector.normalizePatchPath(String(lineStr.dropFirst(10)))
+                        pos = lineEnd + 1; continue
+                    }
+                    if lineStr.hasPrefix("copy to ") {
+                        changeType = "copied"
+                        newPath = DiffPatchSelector.normalizePatchPath(String(lineStr.dropFirst(8)))
+                        pos = lineEnd + 1; continue
+                    }
+                }
 
-            if stringLine.hasPrefix("Binary files ") || stringLine == "GIT binary patch" {
-                isBinary = true
-                continue
-            }
+                if firstByte == UInt8(ascii: "B") && lineLen >= 13 {
+                    isBinary = true; pos = lineEnd + 1; continue
+                }
+                if firstByte == UInt8(ascii: "G") && lineLen == 16 {
+                    // "GIT binary patch"
+                    isBinary = true; pos = lineEnd + 1; continue
+                }
 
-            if stringLine.hasPrefix("@@"),
-               let header = parseHunkHeader(stringLine) {
-                flushCurrentHunk()
-                currentHunk = HunkBuilder(
-                    header: stringLine,
-                    oldStart: header.oldStart,
-                    oldCount: header.oldCount,
-                    newStart: header.newStart,
-                    newCount: header.newCount
-                )
-                continue
-            }
+                // Hunk header: @@ -N,N +N,N @@
+                if firstByte == UInt8(ascii: "@") && lineLen >= 7 && base[pos+1] == UInt8(ascii: "@") {
+                    let lineStr = String(decoding: UnsafeBufferPointer(start: base + pos, count: lineLen), as: UTF8.self)
+                    if let header = parseHunkHeader(lineStr) {
+                        flushCurrentHunk()
+                        currentHunk = HunkBuilder(
+                            header: lineStr,
+                            oldStart: header.oldStart,
+                            oldCount: header.oldCount,
+                            newStart: header.newStart,
+                            newCount: header.newCount
+                        )
+                    }
+                    pos = lineEnd + 1; continue
+                }
 
-            guard currentHunk != nil else { continue }
+                // --- and +++ lines (skip)
+                if firstByte == UInt8(ascii: "-") && lineLen >= 3 && base[pos+1] == 0x2D && base[pos+2] == 0x2D {
+                    pos = lineEnd + 1; continue
+                }
+                if firstByte == UInt8(ascii: "+") && lineLen >= 3 && base[pos+1] == 0x2B && base[pos+2] == 0x2B {
+                    pos = lineEnd + 1; continue
+                }
 
-            if stringLine == "\\ No newline at end of file" {
-                currentHunk?.appendNoNewlineMarker(stringLine)
-                continue
-            }
+                guard currentHunk != nil else { pos = lineEnd + 1; continue }
 
-            if stringLine.hasPrefix("+"), !stringLine.hasPrefix("+++") {
-                currentHunk?.appendAdditionLine(String(stringLine.dropFirst()))
-                continue
-            }
+                // \\ No newline at end of file
+                if firstByte == UInt8(ascii: "\\") {
+                    let startIdx = filePatch.utf8.index(filePatch.startIndex, offsetBy: pos)
+                    let endIdx = filePatch.utf8.index(filePatch.startIndex, offsetBy: lineEnd)
+                    currentHunk?.appendNoNewlineMarker(filePatch[startIdx..<endIdx])
+                    pos = lineEnd + 1; continue
+                }
 
-            if stringLine.hasPrefix("-"), !stringLine.hasPrefix("---") {
-                currentHunk?.appendDeletionLine(String(stringLine.dropFirst()))
-                continue
-            }
+                // Content lines: +, -, or context (space) — use Substring to share backing storage
+                let textStart = filePatch.utf8.index(filePatch.startIndex, offsetBy: pos + 1)
+                let textEnd = filePatch.utf8.index(filePatch.startIndex, offsetBy: lineEnd)
+                let text = filePatch[textStart..<textEnd]
+                if firstByte == UInt8(ascii: "+") {
+                    currentHunk?.appendAdditionLine(text)
+                } else if firstByte == UInt8(ascii: "-") {
+                    currentHunk?.appendDeletionLine(text)
+                } else if firstByte == UInt8(ascii: " ") {
+                    currentHunk?.appendContextLine(text)
+                }
 
-            if stringLine.hasPrefix(" ") {
-                currentHunk?.appendContextLine(String(stringLine.dropFirst()))
+                pos = lineEnd + 1
             }
         }
 
@@ -808,26 +892,36 @@ enum DiffWebViewFileBuilder {
         return normalized
     }
 
+    /// Fast manual hunk header parser. Format: "@@ -OLD_START[,OLD_COUNT] +NEW_START[,NEW_COUNT] @@"
     private static func parseHunkHeader(_ line: String) -> (oldStart: Int, oldCount: Int, newStart: Int, newCount: Int)? {
-        guard let hunkHeaderRegex,
-              let match = hunkHeaderRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-              let oldStart = integerCapture(at: 1, in: line, match: match),
-              let newStart = integerCapture(at: 3, in: line, match: match) else {
-            return nil
-        }
+        return line.utf8.withContiguousStorageIfAvailable { utf8 -> (Int, Int, Int, Int)? in
+            let count = utf8.count
+            guard count >= 7 else { return nil }
+            let base = utf8.baseAddress!
+            var i = 4 // skip "@@ -"
 
-        let oldCount = integerCapture(at: 2, in: line, match: match) ?? 1
-        let newCount = integerCapture(at: 4, in: line, match: match) ?? 1
-        return (oldStart, oldCount, newStart, newCount)
-    }
+            func scanInt() -> Int? {
+                var n = 0; var has = false
+                while i < count {
+                    let b = base[i]
+                    if b >= 0x30 && b <= 0x39 { n = n * 10 + Int(b - 0x30); has = true; i += 1 }
+                    else { break }
+                }
+                return has ? n : nil
+            }
 
-    private static func integerCapture(at index: Int, in text: String, match: NSTextCheckingResult) -> Int? {
-        let range = match.range(at: index)
-        guard range.location != NSNotFound,
-              let swiftRange = Range(range, in: text) else {
-            return nil
-        }
-        return Int(text[swiftRange])
+            guard let os = scanInt() else { return nil }
+            var oc = 1
+            if i < count && base[i] == UInt8(ascii: ",") { i += 1; oc = scanInt() ?? 1 }
+            guard i < count && base[i] == UInt8(ascii: " ") else { return nil }
+            i += 1
+            guard i < count && base[i] == UInt8(ascii: "+") else { return nil }
+            i += 1
+            guard let ns = scanInt() else { return nil }
+            var nc = 1
+            if i < count && base[i] == UInt8(ascii: ",") { i += 1; nc = scanInt() ?? 1 }
+            return (os, oc, ns, nc)
+        } ?? nil
     }
 }
 
@@ -872,7 +966,7 @@ final class DiffWebViewUpdateContext {
                 encodedBytes: precomputed.encodedBytes
             )
         } else {
-            let json = DiffWebViewUpdatePlanner.encodeJSON(payload)
+            let json = DiffWebViewUpdatePlanner.fastEncodePayload(payload)
             cached = CachedFullPayload(
                 javaScript: "window.cmuxReceiveDiffPayload(\(json));",
                 encodedBytes: json.utf8.count
@@ -926,7 +1020,7 @@ enum DiffWebViewUpdatePlanner {
             return context.fullPayloadUpdate(for: payload, kind: kind)
         }
 
-        let json = encodeJSON(payload)
+        let json = fastEncodePayload(payload)
         return DiffWebViewJavaScriptUpdate(
             kind: kind,
             javaScript: "window.cmuxReceiveDiffPayload(\(json));",
@@ -937,5 +1031,482 @@ enum DiffWebViewUpdatePlanner {
     static func encodeJSON<T: Encodable>(_ value: T) -> String {
         let data = try? JSONEncoder().encode(value)
         return data.flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+    }
+
+    // MARK: - Fast hand-built JSON serializer for DiffWebViewRenderPayload
+
+    static func fastEncodePayload(_ payload: DiffWebViewRenderPayload) -> String {
+        // Estimate: ~200 bytes per line, average 15 lines per file
+        let estimatedSize = payload.files.count * 15 * 200 + 512
+        var buf = [UInt8]()
+        buf.reserveCapacity(estimatedSize)
+
+        let allSafe = false // conservative: always check per-string
+
+        buf.append(contentsOf: "{\"files\":[".utf8)
+        for (fi, file) in payload.files.enumerated() {
+            if fi > 0 { buf.append(0x2C) } // ,
+            writeFile(&buf, file, knownSafe: allSafe)
+        }
+        buf.append(contentsOf: "],\"selectedFilePath\":".utf8)
+        if let sfp = payload.selectedFilePath {
+            writeQuotedString(&buf, sfp)
+        } else {
+            buf.append(contentsOf: "null".utf8)
+        }
+        buf.append(contentsOf: ",\"isDarkMode\":".utf8)
+        buf.append(contentsOf: (payload.isDarkMode ? "true" : "false").utf8)
+        buf.append(0x7D) // }
+        return String(decoding: buf, as: UTF8.self)
+    }
+
+    private static func writeFile(_ buf: inout [UInt8], _ file: DiffWebViewRenderableFile, knownSafe: Bool = false) {
+        buf.append(contentsOf: "{\"path\":".utf8)
+        writeQuotedString(&buf, file.path)
+        buf.append(contentsOf: ",\"oldPath\":".utf8)
+        writeOptionalString(&buf, file.oldPath)
+        buf.append(contentsOf: ",\"newPath\":".utf8)
+        writeOptionalString(&buf, file.newPath)
+        buf.append(contentsOf: ",\"displayPath\":".utf8)
+        writeQuotedString(&buf, file.displayPath)
+        buf.append(contentsOf: ",\"language\":".utf8)
+        writeQuotedString(&buf, file.language)
+        buf.append(contentsOf: ",\"changeType\":".utf8)
+        writeQuotedString(&buf, file.changeType)
+        buf.append(contentsOf: ",\"isBinary\":".utf8)
+        buf.append(contentsOf: (file.isBinary ? "true" : "false").utf8)
+        buf.append(contentsOf: ",\"additions\":".utf8)
+        writeInt(&buf, file.additions)
+        buf.append(contentsOf: ",\"deletions\":".utf8)
+        writeInt(&buf, file.deletions)
+        buf.append(contentsOf: ",\"hunks\":[".utf8)
+        for (hi, hunk) in file.hunks.enumerated() {
+            if hi > 0 { buf.append(0x2C) }
+            writeHunk(&buf, hunk, knownSafe: knownSafe)
+        }
+        buf.append(contentsOf: "]}".utf8)
+    }
+
+    private static func writeHunk(_ buf: inout [UInt8], _ hunk: DiffWebViewRenderableHunk, knownSafe: Bool = false) {
+        buf.append(contentsOf: "{\"header\":".utf8)
+        writeQuotedString(&buf, hunk.header)
+        buf.append(contentsOf: ",\"oldStart\":".utf8)
+        writeInt(&buf, hunk.oldStart)
+        buf.append(contentsOf: ",\"oldCount\":".utf8)
+        writeInt(&buf, hunk.oldCount)
+        buf.append(contentsOf: ",\"newStart\":".utf8)
+        writeInt(&buf, hunk.newStart)
+        buf.append(contentsOf: ",\"newCount\":".utf8)
+        writeInt(&buf, hunk.newCount)
+        buf.append(contentsOf: ",\"lines\":[".utf8)
+        for (li, line) in hunk.lines.enumerated() {
+            if li > 0 { buf.append(0x2C) }
+            writeLine(&buf, line, knownSafe: knownSafe)
+        }
+        buf.append(contentsOf: "]}".utf8)
+    }
+
+    private static func writeLine(_ buf: inout [UInt8], _ line: DiffWebViewRenderableLine, knownSafe: Bool = false) {
+        buf.append(contentsOf: "{\"kind\":".utf8)
+        writeQuotedString(&buf, line.kind)
+        buf.append(contentsOf: ",\"text\":".utf8)
+        writeQuotedStringProtocolChecked(&buf, line.text, knownSafe: knownSafe)
+        buf.append(contentsOf: ",\"oldLineNumber\":".utf8)
+        writeOptionalInt(&buf, line.oldLineNumber)
+        buf.append(contentsOf: ",\"newLineNumber\":".utf8)
+        writeOptionalInt(&buf, line.newLineNumber)
+        buf.append(contentsOf: ",\"isNoNewlineMarker\":".utf8)
+        buf.append(contentsOf: (line.isNoNewlineMarker ? "true" : "false").utf8)
+        buf.append(0x7D)
+    }
+
+    @inline(__always)
+    private static func writeQuotedStringProtocol<S: StringProtocol>(_ buf: inout [UInt8], _ value: S) {
+        writeQuotedStringProtocolChecked(&buf, value, knownSafe: false)
+    }
+
+    /// When `knownSafe` is true, skip the per-string memchr checks for special chars.
+    /// Use when a whole-patch pre-check has confirmed no specials exist.
+    @inline(__always)
+    private static func writeQuotedStringProtocolChecked<S: StringProtocol>(_ buf: inout [UInt8], _ value: S, knownSafe: Bool) {
+        buf.append(0x22)
+        value.utf8.withContiguousStorageIfAvailable { utf8 in
+            guard let base = utf8.baseAddress else { return }
+            let count = utf8.count
+
+            if knownSafe {
+                buf.append(contentsOf: UnsafeBufferPointer(start: base, count: count))
+            } else {
+                let rawBase = UnsafeRawPointer(base)
+                let hasNewline = memchr(rawBase, Int32(0x0A), count) != nil
+                let hasQuote = memchr(rawBase, Int32(0x22), count) != nil
+                let hasBackslash = memchr(rawBase, Int32(0x5C), count) != nil
+                let hasTab = memchr(rawBase, Int32(0x09), count) != nil
+                if !(hasNewline || hasQuote || hasBackslash || hasTab) {
+                    buf.append(contentsOf: UnsafeBufferPointer(start: base, count: count))
+                } else {
+                    var segStart = 0
+                    for i in 0..<count {
+                        let b = base[i]
+                        guard b < 0x20 || b == 0x22 || b == 0x5C else { continue }
+                        if segStart < i { buf.append(contentsOf: UnsafeBufferPointer(start: base + segStart, count: i - segStart)) }
+                        switch b {
+                        case 0x0A: buf.append(0x5C); buf.append(0x6E)
+                        case 0x0D: buf.append(0x5C); buf.append(0x72)
+                        case 0x09: buf.append(0x5C); buf.append(0x74)
+                        case 0x08: buf.append(0x5C); buf.append(0x62)
+                        case 0x0C: buf.append(0x5C); buf.append(0x66)
+                        case 0x22: buf.append(0x5C); buf.append(0x22)
+                        case 0x5C: buf.append(0x5C); buf.append(0x5C)
+                        default:
+                            buf.append(0x5C); buf.append(0x75); buf.append(0x30); buf.append(0x30)
+                            let hi = b >> 4; let lo = b & 0x0F
+                            buf.append(hi < 10 ? 0x30 + hi : 0x61 + hi - 10)
+                            buf.append(lo < 10 ? 0x30 + lo : 0x61 + lo - 10)
+                        }
+                        segStart = i + 1
+                    }
+                    if segStart < count { buf.append(contentsOf: UnsafeBufferPointer(start: base + segStart, count: count - segStart)) }
+                }
+            }
+        }
+        buf.append(0x22)
+    }
+
+    @inline(__always)
+    private static func writeQuotedString(_ buf: inout [UInt8], _ value: String) {
+        buf.append(0x22) // "
+        // Fast JSON-escape: most code text is safe ASCII
+        value.utf8.withContiguousStorageIfAvailable { utf8 in
+            guard let base = utf8.baseAddress else { return }
+            let count = utf8.count
+            let rawBase = UnsafeRawPointer(base)
+
+            // Pre-check if any escaping is needed
+            let hasNewline = memchr(rawBase, Int32(0x0A), count) != nil
+            let hasQuote = memchr(rawBase, Int32(0x22), count) != nil
+            let hasBackslash = memchr(rawBase, Int32(0x5C), count) != nil
+            let hasTab = memchr(rawBase, Int32(0x09), count) != nil
+
+            if !(hasNewline || hasQuote || hasBackslash || hasTab) {
+                // Fast path: no escaping needed — bulk copy
+                buf.append(contentsOf: UnsafeBufferPointer(start: base, count: count))
+            } else {
+                // Slow path: escape special characters
+                var segStart = 0
+                for i in 0..<count {
+                    let b = base[i]
+                    guard b < 0x20 || b == 0x22 || b == 0x5C else { continue }
+                    if segStart < i {
+                        buf.append(contentsOf: UnsafeBufferPointer(start: base + segStart, count: i - segStart))
+                    }
+                    switch b {
+                    case 0x0A: buf.append(0x5C); buf.append(0x6E)
+                    case 0x0D: buf.append(0x5C); buf.append(0x72)
+                    case 0x09: buf.append(0x5C); buf.append(0x74)
+                    case 0x22: buf.append(0x5C); buf.append(0x22)
+                    case 0x5C: buf.append(0x5C); buf.append(0x5C)
+                    case 0x08: buf.append(0x5C); buf.append(0x62)
+                    case 0x0C: buf.append(0x5C); buf.append(0x66)
+                    default:
+                        buf.append(0x5C); buf.append(0x75); buf.append(0x30); buf.append(0x30)
+                        let hi = b >> 4; let lo = b & 0x0F
+                        buf.append(hi < 10 ? 0x30 + hi : 0x61 + hi - 10)
+                        buf.append(lo < 10 ? 0x30 + lo : 0x61 + lo - 10)
+                    }
+                    segStart = i + 1
+                }
+                if segStart < count {
+                    buf.append(contentsOf: UnsafeBufferPointer(start: base + segStart, count: count - segStart))
+                }
+            }
+        }
+        buf.append(0x22) // "
+    }
+
+    @inline(__always)
+    private static func writeOptionalString(_ buf: inout [UInt8], _ value: String?) {
+        if let value { writeQuotedString(&buf, value) } else { buf.append(contentsOf: "null".utf8) }
+    }
+
+    @inline(__always)
+    private static func writeInt(_ buf: inout [UInt8], _ value: Int) {
+        if value == 0 { buf.append(0x30); return }
+        var n = value
+        if n < 0 { buf.append(0x2D); n = -n }
+        let start = buf.count
+        while n > 0 { buf.append(UInt8(n % 10) + 0x30); n /= 10 }
+        var lo = start; var hi = buf.count - 1
+        while lo < hi { buf.swapAt(lo, hi); lo += 1; hi -= 1 }
+    }
+
+    @inline(__always)
+    private static func writeOptionalInt(_ buf: inout [UInt8], _ value: Int?) {
+        if let value { writeInt(&buf, value) } else { buf.append(contentsOf: "null".utf8) }
+    }
+
+    /// Write a quoted JSON string directly from raw UTF-8 bytes without creating a Swift String.
+    @inline(__always)
+    private static func writeQuotedBytes(_ buf: inout [UInt8], _ base: UnsafePointer<UInt8>, _ start: Int, _ length: Int, knownSafe: Bool = false) {
+        buf.append(0x22) // "
+        guard length > 0 else { buf.append(0x22); return }
+
+        if knownSafe {
+            buf.append(contentsOf: UnsafeBufferPointer(start: base + start, count: length))
+            buf.append(0x22)
+            return
+        }
+
+        let rawBase = UnsafeRawPointer(base + start)
+        let hasNewline = memchr(rawBase, Int32(0x0A), length) != nil
+        let hasQuote = memchr(rawBase, Int32(0x22), length) != nil
+        let hasBackslash = memchr(rawBase, Int32(0x5C), length) != nil
+        let hasTab = memchr(rawBase, Int32(0x09), length) != nil
+
+        if !(hasNewline || hasQuote || hasBackslash || hasTab) {
+            buf.append(contentsOf: UnsafeBufferPointer(start: base + start, count: length))
+        } else {
+            var segStart = 0
+            for i in 0..<length {
+                let b = base[start + i]
+                guard b < 0x20 || b == 0x22 || b == 0x5C else { continue }
+                if segStart < i {
+                    buf.append(contentsOf: UnsafeBufferPointer(start: base + start + segStart, count: i - segStart))
+                }
+                switch b {
+                case 0x0A: buf.append(0x5C); buf.append(0x6E)
+                case 0x0D: buf.append(0x5C); buf.append(0x72)
+                case 0x09: buf.append(0x5C); buf.append(0x74)
+                case 0x08: buf.append(0x5C); buf.append(0x62)
+                case 0x0C: buf.append(0x5C); buf.append(0x66)
+                case 0x22: buf.append(0x5C); buf.append(0x22)
+                case 0x5C: buf.append(0x5C); buf.append(0x5C)
+                default:
+                    buf.append(0x5C); buf.append(0x75); buf.append(0x30); buf.append(0x30)
+                    let hi = b >> 4; let lo = b & 0x0F
+                    buf.append(hi < 10 ? 0x30 + hi : 0x61 + hi - 10)
+                    buf.append(lo < 10 ? 0x30 + lo : 0x61 + lo - 10)
+                }
+                segStart = i + 1
+            }
+            if segStart < length {
+                buf.append(contentsOf: UnsafeBufferPointer(start: base + start + segStart, count: length - segStart))
+            }
+        }
+        buf.append(0x22) // "
+    }
+
+    /// Combined build+JSON: parse a single file's patch and write its JSON representation
+    /// directly into the buffer, skipping intermediate DiffWebViewRenderableLine allocation.
+    static func writeFileFromPatch(
+        _ buf: inout [UInt8],
+        path: String,
+        additions: Int,
+        deletions: Int,
+        isBinary: Bool,
+        filePatch: String
+    ) {
+        buf.append(contentsOf: "{\"path\":".utf8)
+        writeQuotedString(&buf, path)
+
+        // Pre-check: does this file's patch contain any chars needing JSON escaping in content lines?
+        // Content lines never contain \n (that's the line delimiter), but may contain ", \, or \t.
+        let patchNeedsEscape = filePatch.utf8.withContiguousStorageIfAvailable { utf8 -> Bool in
+            guard let base = utf8.baseAddress else { return true }
+            let rawBase = UnsafeRawPointer(base)
+            let count = utf8.count
+            return memchr(rawBase, Int32(0x22), count) != nil
+                || memchr(rawBase, Int32(0x5C), count) != nil
+                || memchr(rawBase, Int32(0x09), count) != nil
+        } ?? true
+
+        var oldPath: String?
+        var newPath: String?
+        var changeType = "modified"
+        var detectedBinary = isBinary
+
+        // Scan the patch to extract metadata and write hunks directly as JSON
+        var hunkCount = 0
+        var lineCountInHunk = 0
+
+        // We'll build the hunks JSON into a temporary buffer, then splice it
+        var hunksBuf = [UInt8]()
+        hunksBuf.reserveCapacity(filePatch.utf8.count + filePatch.utf8.count / 4)
+
+        filePatch.utf8.withContiguousStorageIfAvailable { utf8 in
+            let count = utf8.count
+            guard count > 0 else { return }
+            let base = utf8.baseAddress!
+            let rawBase = UnsafeRawPointer(base)
+            var pos = 0
+            var inHunk = false
+            var nextOldLine = 0
+            var nextNewLine = 0
+
+            while pos < count {
+                let nlResult = memchr(rawBase + pos, Int32(0x0A), count - pos)
+                let lineEnd: Int
+                if let nlPtr = nlResult {
+                    lineEnd = base.distance(to: nlPtr.assumingMemoryBound(to: UInt8.self))
+                } else {
+                    lineEnd = count
+                }
+                let lineLen = lineEnd - pos
+                guard lineLen > 0 else { pos = lineEnd + 1; continue }
+
+                let firstByte = base[pos]
+
+                // Metadata lines
+                if firstByte == UInt8(ascii: "d") && lineLen >= 11 && base[pos+1] == 0x69 && base[pos+2] == 0x66 && base[pos+3] == 0x66 {
+                    let lineStr = String(decoding: UnsafeBufferPointer(start: base + pos, count: lineLen), as: UTF8.self)
+                    let parts = lineStr.split(separator: " ", omittingEmptySubsequences: false)
+                    if parts.count >= 4 {
+                        oldPath = DiffPatchSelector.normalizePatchPath(String(parts[2]))
+                        newPath = DiffPatchSelector.normalizePatchPath(String(parts[3]))
+                    }
+                    pos = lineEnd + 1; continue
+                }
+                if firstByte == UInt8(ascii: "d") && lineLen >= 18 && base[pos+1] == 0x65 {
+                    changeType = "deleted"; pos = lineEnd + 1; continue
+                }
+                if firstByte == UInt8(ascii: "n") && lineLen >= 14 && base[pos+1] == 0x65 && base[pos+2] == 0x77 {
+                    changeType = "added"; pos = lineEnd + 1; continue
+                }
+                if firstByte == UInt8(ascii: "r") && lineLen >= 10 {
+                    let lineStr = String(decoding: UnsafeBufferPointer(start: base + pos, count: lineLen), as: UTF8.self)
+                    if lineStr.hasPrefix("rename from ") { changeType = "renamed"; oldPath = DiffPatchSelector.normalizePatchPath(String(lineStr.dropFirst(12))); pos = lineEnd + 1; continue }
+                    if lineStr.hasPrefix("rename to ") { changeType = "renamed"; newPath = DiffPatchSelector.normalizePatchPath(String(lineStr.dropFirst(10))); pos = lineEnd + 1; continue }
+                }
+                if firstByte == UInt8(ascii: "c") && lineLen >= 8 {
+                    let lineStr = String(decoding: UnsafeBufferPointer(start: base + pos, count: lineLen), as: UTF8.self)
+                    if lineStr.hasPrefix("copy from ") { changeType = "copied"; oldPath = DiffPatchSelector.normalizePatchPath(String(lineStr.dropFirst(10))); pos = lineEnd + 1; continue }
+                    if lineStr.hasPrefix("copy to ") { changeType = "copied"; newPath = DiffPatchSelector.normalizePatchPath(String(lineStr.dropFirst(8))); pos = lineEnd + 1; continue }
+                }
+                if firstByte == UInt8(ascii: "B") && lineLen >= 13 { detectedBinary = true; pos = lineEnd + 1; continue }
+                if firstByte == UInt8(ascii: "G") && lineLen == 16 { detectedBinary = true; pos = lineEnd + 1; continue }
+
+                // Hunk header
+                if firstByte == UInt8(ascii: "@") && lineLen >= 7 && base[pos+1] == UInt8(ascii: "@") {
+                    // Close previous hunk's lines array
+                    if inHunk { hunksBuf.append(contentsOf: "]}".utf8) }
+
+                    if hunkCount > 0 { hunksBuf.append(0x2C) }
+                    hunkCount += 1
+                    lineCountInHunk = 0
+
+                    // Parse header numbers manually
+                    var hi = pos + 4; var oldStart = 0; var oldCount = 1; var newStart = 0; var newCount = 1
+                    while hi < lineEnd && base[hi] >= 0x30 && base[hi] <= 0x39 { oldStart = oldStart * 10 + Int(base[hi] - 0x30); hi += 1 }
+                    if hi < lineEnd && base[hi] == UInt8(ascii: ",") { hi += 1; oldCount = 0; while hi < lineEnd && base[hi] >= 0x30 && base[hi] <= 0x39 { oldCount = oldCount * 10 + Int(base[hi] - 0x30); hi += 1 } }
+                    if hi < lineEnd && base[hi] == UInt8(ascii: " ") { hi += 1 }
+                    if hi < lineEnd && base[hi] == UInt8(ascii: "+") { hi += 1 }
+                    while hi < lineEnd && base[hi] >= 0x30 && base[hi] <= 0x39 { newStart = newStart * 10 + Int(base[hi] - 0x30); hi += 1 }
+                    if hi < lineEnd && base[hi] == UInt8(ascii: ",") { hi += 1; newCount = 0; while hi < lineEnd && base[hi] >= 0x30 && base[hi] <= 0x39 { newCount = newCount * 10 + Int(base[hi] - 0x30); hi += 1 } }
+
+                    nextOldLine = oldStart; nextNewLine = newStart
+
+                    hunksBuf.append(contentsOf: "{\"header\":".utf8)
+                    writeQuotedBytes(&hunksBuf, base, pos, lineLen)
+                    hunksBuf.append(contentsOf: ",\"oldStart\":".utf8); writeInt(&hunksBuf, oldStart)
+                    hunksBuf.append(contentsOf: ",\"oldCount\":".utf8); writeInt(&hunksBuf, oldCount)
+                    hunksBuf.append(contentsOf: ",\"newStart\":".utf8); writeInt(&hunksBuf, newStart)
+                    hunksBuf.append(contentsOf: ",\"newCount\":".utf8); writeInt(&hunksBuf, newCount)
+                    hunksBuf.append(contentsOf: ",\"lines\":[".utf8)
+                    inHunk = true
+                    pos = lineEnd + 1; continue
+                }
+
+                // --- / +++ skip
+                if firstByte == UInt8(ascii: "-") && lineLen >= 3 && base[pos+1] == 0x2D && base[pos+2] == 0x2D { pos = lineEnd + 1; continue }
+                if firstByte == UInt8(ascii: "+") && lineLen >= 3 && base[pos+1] == 0x2B && base[pos+2] == 0x2B { pos = lineEnd + 1; continue }
+
+                guard inHunk else { pos = lineEnd + 1; continue }
+
+                // Content lines — write JSON directly from raw bytes
+                if lineCountInHunk > 0 { hunksBuf.append(0x2C) }
+                lineCountInHunk += 1
+
+                if firstByte == UInt8(ascii: "\\") {
+                    // No newline marker
+                    hunksBuf.append(contentsOf: "{\"kind\":\"note\",\"text\":".utf8)
+                    writeQuotedBytes(&hunksBuf, base, pos, lineLen)
+                    hunksBuf.append(contentsOf: ",\"oldLineNumber\":null,\"newLineNumber\":null,\"isNoNewlineMarker\":true}".utf8)
+                } else if firstByte == UInt8(ascii: "+") {
+                    hunksBuf.append(contentsOf: "{\"kind\":\"addition\",\"text\":".utf8)
+                    writeQuotedBytes(&hunksBuf, base, pos + 1, lineLen - 1, knownSafe: !patchNeedsEscape)
+                    hunksBuf.append(contentsOf: ",\"oldLineNumber\":null,\"newLineNumber\":".utf8)
+                    writeInt(&hunksBuf, nextNewLine)
+                    hunksBuf.append(contentsOf: ",\"isNoNewlineMarker\":false}".utf8)
+                    nextNewLine += 1
+                } else if firstByte == UInt8(ascii: "-") {
+                    hunksBuf.append(contentsOf: "{\"kind\":\"deletion\",\"text\":".utf8)
+                    writeQuotedBytes(&hunksBuf, base, pos + 1, lineLen - 1, knownSafe: !patchNeedsEscape)
+                    hunksBuf.append(contentsOf: ",\"oldLineNumber\":".utf8)
+                    writeInt(&hunksBuf, nextOldLine)
+                    hunksBuf.append(contentsOf: ",\"newLineNumber\":null,\"isNoNewlineMarker\":false}".utf8)
+                    nextOldLine += 1
+                } else if firstByte == UInt8(ascii: " ") {
+                    hunksBuf.append(contentsOf: "{\"kind\":\"context\",\"text\":".utf8)
+                    writeQuotedBytes(&hunksBuf, base, pos + 1, lineLen - 1, knownSafe: !patchNeedsEscape)
+                    hunksBuf.append(contentsOf: ",\"oldLineNumber\":".utf8)
+                    writeInt(&hunksBuf, nextOldLine)
+                    hunksBuf.append(contentsOf: ",\"newLineNumber\":".utf8)
+                    writeInt(&hunksBuf, nextNewLine)
+                    hunksBuf.append(contentsOf: ",\"isNoNewlineMarker\":false}".utf8)
+                    nextOldLine += 1; nextNewLine += 1
+                }
+
+                pos = lineEnd + 1
+            }
+
+            if inHunk { hunksBuf.append(contentsOf: "]}".utf8) }
+        }
+
+        // Resolve paths
+        let resolvedNewPath = newPath ?? path
+        let resolvedOldPath = oldPath ?? resolvedNewPath
+
+        buf.append(contentsOf: ",\"oldPath\":".utf8)
+        writeOptionalString(&buf, resolvedOldPath)
+        buf.append(contentsOf: ",\"newPath\":".utf8)
+        writeOptionalString(&buf, resolvedNewPath)
+        buf.append(contentsOf: ",\"displayPath\":".utf8)
+        writeQuotedString(&buf, resolvedNewPath)
+        buf.append(contentsOf: ",\"language\":".utf8)
+        writeQuotedString(&buf, DiffWebViewLanguageResolver.languageHint(for: resolvedNewPath))
+        buf.append(contentsOf: ",\"changeType\":".utf8)
+        writeQuotedString(&buf, changeType)
+        buf.append(contentsOf: ",\"isBinary\":".utf8)
+        buf.append(contentsOf: (detectedBinary ? "true" : "false").utf8)
+        buf.append(contentsOf: ",\"additions\":".utf8)
+        writeInt(&buf, additions)
+        buf.append(contentsOf: ",\"deletions\":".utf8)
+        writeInt(&buf, deletions)
+        buf.append(contentsOf: ",\"hunks\":[".utf8)
+        buf.append(contentsOf: hunksBuf)
+        buf.append(contentsOf: "]}".utf8)
+    }
+
+    /// Fast-path: encode a full payload directly from patch data, bypassing intermediate struct creation.
+    static func fastEncodePayloadFromPatches(
+        fileInputs: [(path: String, additions: Int, deletions: Int, isBinary: Bool, filePatch: String)],
+        selectedFilePath: String?,
+        isDarkMode: Bool
+    ) -> String {
+        let estimatedSize = fileInputs.reduce(0) { $0 + $1.filePatch.utf8.count } + fileInputs.count * 200 + 512
+        var buf = [UInt8]()
+        buf.reserveCapacity(estimatedSize)
+
+        buf.append(contentsOf: "{\"files\":[".utf8)
+        for (fi, input) in fileInputs.enumerated() {
+            if fi > 0 { buf.append(0x2C) }
+            writeFileFromPatch(&buf, path: input.path, additions: input.additions, deletions: input.deletions, isBinary: input.isBinary, filePatch: input.filePatch)
+        }
+        buf.append(contentsOf: "],\"selectedFilePath\":".utf8)
+        if let sfp = selectedFilePath { writeQuotedString(&buf, sfp) } else { buf.append(contentsOf: "null".utf8) }
+        buf.append(contentsOf: ",\"isDarkMode\":".utf8)
+        buf.append(contentsOf: (isDarkMode ? "true" : "false").utf8)
+        buf.append(0x7D)
+        return String(decoding: buf, as: UTF8.self)
     }
 }

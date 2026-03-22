@@ -511,7 +511,20 @@ final class DiffPanel: Panel, ObservableObject {
         guard hasLoadedSnapshot, !patch.isEmpty else { return nil }
 
         if isShowingAllFiles {
-            let renderedFiles = files.compactMap(renderableFile(for:))
+            // Build directly from the files array — no O(n²) linear search per file
+            let renderedFiles: [DiffWebViewRenderableFile] = files.compactMap { fileEntry in
+                let filePatch = currentScopeFilePatchesByPath[fileEntry.path]
+                    ?? DiffPatchSelector.singleFilePatch(from: patch, selectedFilePath: fileEntry.path)
+                return DiffWebViewFileBuilder.build(
+                    fileEntry: DiffWebViewFileBuilder.FileInput(
+                        path: fileEntry.path,
+                        additions: fileEntry.additions,
+                        deletions: fileEntry.deletions,
+                        isBinary: fileEntry.isBinary
+                    ),
+                    filePatch: filePatch.isEmpty ? patch : filePatch
+                )
+            }
             guard !renderedFiles.isEmpty else { return nil }
             return DiffWebViewRenderPayload(
                 files: renderedFiles,
@@ -533,16 +546,17 @@ final class DiffPanel: Panel, ObservableObject {
         )
     }
 
-    private func renderableFile(for fileEntry: FileEntry) -> DiffWebViewRenderableFile? {
-        renderableFile(path: fileEntry.path)
-    }
-
     private func renderableFile(path: String) -> DiffWebViewRenderableFile? {
         guard let fileEntry = files.first(where: { $0.path == path }) else { return nil }
         let selectedFilePatch = currentScopeFilePatchesByPath[path]
             ?? DiffPatchSelector.singleFilePatch(from: patch, selectedFilePath: path)
         return DiffWebViewFileBuilder.build(
-            fileEntry: fileEntry,
+            fileEntry: DiffWebViewFileBuilder.FileInput(
+                path: fileEntry.path,
+                additions: fileEntry.additions,
+                deletions: fileEntry.deletions,
+                isBinary: fileEntry.isBinary
+            ),
             filePatch: selectedFilePatch.isEmpty ? patch : selectedFilePatch
         )
     }
