@@ -36,6 +36,12 @@
   --number-dark: #fb923c;
   --comment-light: #6b7280;
   --comment-dark: #7c8798;
+  --scrollbar-thumb-light: rgba(107, 114, 128, 0.34);
+  --scrollbar-thumb-light-hover: rgba(107, 114, 128, 0.5);
+  --scrollbar-track-light: rgba(15, 23, 42, 0.04);
+  --scrollbar-thumb-dark: rgba(139, 150, 168, 0.28);
+  --scrollbar-thumb-dark-hover: rgba(139, 150, 168, 0.42);
+  --scrollbar-track-dark: rgba(255, 255, 255, 0.03);
 }
 
 html, body {
@@ -44,6 +50,8 @@ html, body {
   background: transparent;
   overflow: auto;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb-light) var(--scrollbar-track-light);
 }
 
 html[data-theme="light"] body {
@@ -54,6 +62,41 @@ html[data-theme="light"] body {
 html[data-theme="dark"] body {
   background: var(--bg-dark);
   color: var(--text-dark);
+  scrollbar-color: var(--scrollbar-thumb-dark) var(--scrollbar-track-dark);
+}
+
+body::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+body::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-light);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+body::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-light-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+html[data-theme="dark"] body::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-dark);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+html[data-theme="dark"] body::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-dark-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 #root {
