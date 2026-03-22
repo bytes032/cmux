@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="cmux-diff-viewer.css">
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    window.cmuxDiffState = {
+      currentPayload: null,
+      renderToken: 0,
+    };
+
+    window.cmuxReceiveDiffPayload = function(payload) {
+      window.cmuxDiffState.currentPayload = payload;
+      if (window.cmuxDiffRender) {
+        window.cmuxDiffRender(payload);
+      }
+    };
+
+    window.cmuxApplyTheme = function(isDarkMode) {
+      if (!window.cmuxDiffState.currentPayload) {
+        return;
+      }
+      const nextPayload = {
+        ...window.cmuxDiffState.currentPayload,
+        isDarkMode,
+      };
+      window.cmuxDiffState.currentPayload = nextPayload;
+      if (window.cmuxDiffRender) {
+        window.cmuxDiffRender(nextPayload);
+      }
+    };
+  </script>
+  <script type="module" src="cmux-diff-viewer.js"></script>
+</body>
+</html>

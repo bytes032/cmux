@@ -34,7 +34,12 @@
 		A5007420 /* BrowserPopupWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5007421 /* BrowserPopupWindowController.swift */; };
 		A5001420 /* MarkdownPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001418 /* MarkdownPanel.swift */; };
 		A5001421 /* MarkdownPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001419 /* MarkdownPanelView.swift */; };
+		A5001422 /* DiffPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001424 /* DiffPanel.swift */; };
+		A5001423 /* DiffPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001425 /* DiffPanelView.swift */; };
+		A5001426 /* DiffPanelPerfSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001427 /* DiffPanelPerfSupport.swift */; };
 		A5001290 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = A5001291 /* MarkdownUI */; };
+		A5001294 /* libgit2 in Frameworks */ = {isa = PBXBuildFile; productRef = A5001295 /* libgit2 */; };
+		A5001297 /* PierreDiffsSwift in Frameworks */ = {isa = PBXBuildFile; productRef = A5001298 /* PierreDiffsSwift */; };
 		A5001405 /* PanelContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001415 /* PanelContentView.swift */; };
 		A5001406 /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001416 /* Workspace.swift */; };
 		A5001407 /* WorkspaceContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001417 /* WorkspaceContentView.swift */; };
@@ -108,6 +113,10 @@
 		DA7A10CA710E000000000003 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = DA7A10CA710E000000000001 /* Localizable.xcstrings */; };
 		DA7A10CA710E000000000004 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = DA7A10CA710E000000000002 /* InfoPlist.xcstrings */; };
 		A5001623 /* cmux.sdef in Resources */ = {isa = PBXBuildFile; fileRef = A5001622 /* cmux.sdef */; };
+		A5001624 /* cmux-diff-viewer.html in Resources */ = {isa = PBXBuildFile; fileRef = A5001625 /* cmux-diff-viewer.html */; };
+		A5001626 /* cmux-diff-viewer.css in Resources */ = {isa = PBXBuildFile; fileRef = A5001627 /* cmux-diff-viewer.css */; };
+		A5001628 /* cmux-diff-viewer.js in Resources */ = {isa = PBXBuildFile; fileRef = A5001629 /* cmux-diff-viewer.js */; };
+		A500162A /* cmux-diff-highlight-worker.js in Resources */ = {isa = PBXBuildFile; fileRef = A500162B /* cmux-diff-highlight-worker.js */; };
 						E12E88F82733EC42F32C36A3 /* BrowserConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 970226F3C99D0D937CD00539 /* BrowserConfigTests.swift */; };
 					1F14445B9627DE9D3AF4FD2E /* BrowserPanelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58C7B1B978620BE162CC057E /* BrowserPanelTests.swift */; };
 					46F6AC15863EC84DCD3770A2 /* TerminalAndGhosttyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02FC74F2C27127CC565B3E8C /* TerminalAndGhosttyTests.swift */; };
@@ -210,6 +219,9 @@
 		A5001415 /* PanelContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/PanelContentView.swift; sourceTree = "<group>"; };
 		A5001418 /* MarkdownPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/MarkdownPanel.swift; sourceTree = "<group>"; };
 		A5001419 /* MarkdownPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/MarkdownPanelView.swift; sourceTree = "<group>"; };
+		A5001424 /* DiffPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/DiffPanel.swift; sourceTree = "<group>"; };
+		A5001425 /* DiffPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/DiffPanelView.swift; sourceTree = "<group>"; };
+		A5001427 /* DiffPanelPerfSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/DiffPanelPerfSupport.swift; sourceTree = "<group>"; };
 		A5001416 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
 		A5001417 /* WorkspaceContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceContentView.swift; sourceTree = "<group>"; };
 		A5001090 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -277,6 +289,10 @@
 		DA7A10CA710E000000000001 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		DA7A10CA710E000000000002 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
 		A5001622 /* cmux.sdef */ = {isa = PBXFileReference; lastKnownFileType = text.sdef; path = cmux.sdef; sourceTree = "<group>"; };
+		A5001625 /* cmux-diff-viewer.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = cmux-diff-viewer.html; sourceTree = "<group>"; };
+		A5001627 /* cmux-diff-viewer.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = cmux-diff-viewer.css; sourceTree = "<group>"; };
+		A5001629 /* cmux-diff-viewer.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = cmux-diff-viewer.js; sourceTree = "<group>"; };
+		A500162B /* cmux-diff-highlight-worker.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = cmux-diff-highlight-worker.js; sourceTree = "<group>"; };
 				970226F3C99D0D937CD00539 /* BrowserConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserConfigTests.swift; sourceTree = "<group>"; };
 				58C7B1B978620BE162CC057E /* BrowserPanelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserPanelTests.swift; sourceTree = "<group>"; };
 				02FC74F2C27127CC565B3E8C /* TerminalAndGhosttyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalAndGhosttyTests.swift; sourceTree = "<group>"; };
@@ -304,6 +320,8 @@
 					A5001250 /* Sentry in Frameworks */,
 					A5001270 /* PostHog in Frameworks */,
 					A5001290 /* MarkdownUI in Frameworks */,
+					A5001294 /* libgit2 in Frameworks */,
+					A5001297 /* PierreDiffsSwift in Frameworks */,
 				);
 				runOnlyForDeploymentPostprocessing = 0;
 			};
@@ -342,6 +360,10 @@
 				DA7A10CA710E000000000003 /* Localizable.xcstrings in Resources */,
 				DA7A10CA710E000000000004 /* InfoPlist.xcstrings in Resources */,
 				A5001623 /* cmux.sdef in Resources */,
+				A5001624 /* cmux-diff-viewer.html in Resources */,
+				A5001626 /* cmux-diff-viewer.css in Resources */,
+				A5001628 /* cmux-diff-viewer.js in Resources */,
+				A500162A /* cmux-diff-highlight-worker.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -439,6 +461,9 @@
 				A5007421 /* BrowserPopupWindowController.swift */,
 				A5001418 /* MarkdownPanel.swift */,
 				A5001419 /* MarkdownPanelView.swift */,
+				A5001424 /* DiffPanel.swift */,
+				A5001425 /* DiffPanelView.swift */,
+				A5001427 /* DiffPanelPerfSupport.swift */,
 				A5001510 /* CmuxWebView.swift */,
 				A5001415 /* PanelContentView.swift */,
 				A5001211 /* UpdateController.swift */,
@@ -479,6 +504,10 @@
 				DA7A10CA710E000000000001 /* Localizable.xcstrings */,
 				DA7A10CA710E000000000002 /* InfoPlist.xcstrings */,
 				A5001622 /* cmux.sdef */,
+				A5001625 /* cmux-diff-viewer.html */,
+				A5001627 /* cmux-diff-viewer.css */,
+				A5001629 /* cmux-diff-viewer.js */,
+				A500162B /* cmux-diff-highlight-worker.js */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -576,6 +605,8 @@
 					A5001271 /* PostHog */,
 					A5001261 /* Bonsplit */,
 					A5001291 /* MarkdownUI */,
+					A5001295 /* libgit2 */,
+					A5001298 /* PierreDiffsSwift */,
 				);
 			name = GhosttyTabs;
 			productName = GhosttyTabs;
@@ -678,6 +709,8 @@
 					A5001252 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 					A5001272 /* XCRemoteSwiftPackageReference "posthog-ios" */,
 					A5001292 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
+					A5001296 /* XCRemoteSwiftPackageReference "libgit2" */,
+					A5001299 /* XCRemoteSwiftPackageReference "PierreDiffsSwift" */,
 					A5001260 /* XCLocalSwiftPackageReference "bonsplit" */,
 				);
 			productRefGroup = A5001042 /* Products */;
@@ -734,6 +767,9 @@
 				A5007420 /* BrowserPopupWindowController.swift in Sources */,
 				A5001420 /* MarkdownPanel.swift in Sources */,
 				A5001421 /* MarkdownPanelView.swift in Sources */,
+				A5001422 /* DiffPanel.swift in Sources */,
+				A5001423 /* DiffPanelView.swift in Sources */,
+				A5001426 /* DiffPanelPerfSupport.swift in Sources */,
 				A5001500 /* CmuxWebView.swift in Sources */,
 				A5001405 /* PanelContentView.swift in Sources */,
 				A5001201 /* UpdateController.swift in Sources */,
@@ -1128,6 +1164,22 @@
 					minimumVersion = 2.4.1;
 				};
 			};
+			A5001296 /* XCRemoteSwiftPackageReference "libgit2" */ = {
+				isa = XCRemoteSwiftPackageReference;
+				repositoryURL = "https://github.com/ibrahimcetin/libgit2.git";
+				requirement = {
+					kind = exactVersion;
+					version = 1.9.2;
+				};
+			};
+			A5001299 /* XCRemoteSwiftPackageReference "PierreDiffsSwift" */ = {
+				isa = XCRemoteSwiftPackageReference;
+				repositoryURL = "https://github.com/jamesrochabrun/PierreDiffsSwift.git";
+				requirement = {
+					kind = upToNextMajorVersion;
+					minimumVersion = 1.1.4;
+				};
+			};
 			A5001260 /* XCLocalSwiftPackageReference "bonsplit" */ = {
 				isa = XCLocalSwiftPackageReference;
 				relativePath = vendor/bonsplit;
@@ -1159,6 +1211,16 @@
 				isa = XCSwiftPackageProductDependency;
 				package = A5001292 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
 				productName = MarkdownUI;
+			};
+			A5001295 /* libgit2 */ = {
+				isa = XCSwiftPackageProductDependency;
+				package = A5001296 /* XCRemoteSwiftPackageReference "libgit2" */;
+				productName = libgit2;
+			};
+			A5001298 /* PierreDiffsSwift */ = {
+				isa = XCSwiftPackageProductDependency;
+				package = A5001299 /* XCRemoteSwiftPackageReference "PierreDiffsSwift" */;
+				productName = PierreDiffsSwift;
 			};
 /* End XCSwiftPackageProductDependency section */
 
