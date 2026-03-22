@@ -76,6 +76,40 @@ final class DiffSelectedFileWebPayloadContext {
     }
 }
 
+struct DiffPatchFileIndex: Sendable {
+    let originalPatch: String
+    private let offsetsByPath: [String: (start: Int, end: Int)]
+    let immediateWebViewPaths: Set<String>
+
+    init(originalPatch: String, offsetsByPath: [String: (start: Int, end: Int)], immediateWebViewPaths: Set<String>) {
+        self.originalPatch = originalPatch
+        self.offsetsByPath = offsetsByPath
+        self.immediateWebViewPaths = immediateWebViewPaths
+    }
+
+    var patchesByPath: [String: String] {
+        var result: [String: String] = [:]
+        result.reserveCapacity(offsetsByPath.count)
+        originalPatch.utf8.withContiguousStorageIfAvailable { utf8 in
+            let base = utf8.baseAddress!
+            for (path, offsets) in offsetsByPath {
+                result[path] = String(decoding: UnsafeBufferPointer(start: base + offsets.start, count: offsets.end - offsets.start), as: UTF8.self)
+            }
+        }
+        return result
+    }
+
+    subscript(path: String) -> String? {
+        guard let offsets = offsetsByPath[path] else { return nil }
+        return originalPatch.utf8.withContiguousStorageIfAvailable { utf8 -> String in
+            let base = utf8.baseAddress!
+            return String(decoding: UnsafeBufferPointer(start: base + offsets.start, count: offsets.end - offsets.start), as: UTF8.self)
+        }
+    }
+
+    var fileCount: Int { offsetsByPath.count }
+}
+
 enum DiffPatchSelector {
     static func singleFilePatch(
         from patch: String,
@@ -85,37 +119,164 @@ enum DiffPatchSelector {
     }
 
     static func filePatchesByPath(from patch: String) -> [String: String] {
-        guard !patch.isEmpty else { return [:] }
+        index(from: patch).patchesByPath
+    }
 
-        var patchesByPath: [String: String] = [:]
-        var currentPath: String?
-        var currentSectionStart: String.Index?
-
-        func flushCurrentSection(until endIndex: String.Index) {
-            guard let currentPath, let currentSectionStart, currentSectionStart < endIndex else { return }
-            patchesByPath[currentPath] = String(patch[currentSectionStart..<endIndex])
+    /// Build a patch file index using a single fused UTF-8 buffer scan.
+    /// Returns byte-offset ranges per file and the set of files exceeding the webview threshold.
+    static func index(from patch: String) -> DiffPatchFileIndex {
+        guard !patch.isEmpty else {
+            return DiffPatchFileIndex(originalPatch: patch, offsetsByPath: [:], immediateWebViewPaths: [])
         }
 
-        for line in patch.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.hasPrefix("diff --git ") {
-                flushCurrentSection(until: line.startIndex)
-                currentPath = diffHeaderPath(line)
-                currentSectionStart = line.startIndex
+        var rangesByOffset: [(path: String, startOffset: Int, endOffset: Int)] = []
+        var immediateWebViewPaths: Set<String> = []
+        var currentPath: String?
+        var currentSectionStartOffset = 0
+        var currentContentBytes = 0
+
+        patch.utf8.withContiguousStorageIfAvailable { utf8Buffer -> Void in
+            let count = utf8Buffer.count
+            guard count > 0 else { return }
+            let base = utf8Buffer.baseAddress!
+            let newline = UInt8(ascii: "\n")
+            let plus = UInt8(ascii: "+")
+            let minus = UInt8(ascii: "-")
+            let space = UInt8(ascii: " ")
+            let rawBase = UnsafeRawPointer(base)
+
+            var lineStart = 0
+
+            func flushSection(until endOffset: Int) {
+                guard let path = currentPath, currentSectionStartOffset < endOffset else { return }
+                rangesByOffset.append((path: path, startOffset: currentSectionStartOffset, endOffset: endOffset))
+                if currentContentBytes > DiffSelectedFileRouteDecider.fastRendererByteThreshold {
+                    immediateWebViewPaths.insert(path)
+                }
+            }
+
+            func extractPathFromDiffHeader(at offset: Int, length: Int) -> String? {
+                var spaceCount = 0
+                var thirdTokenStart = -1
+                var fourthTokenStart = -1
+                let lineEnd = offset + length
+                var i = offset
+                while i < lineEnd {
+                    if base[i] == space {
+                        spaceCount += 1
+                        if spaceCount == 2 { thirdTokenStart = i + 1 }
+                        else if spaceCount == 3 { fourthTokenStart = i + 1; break }
+                    }
+                    i += 1
+                }
+                let tokenStart: Int
+                let tokenEnd: Int
+                if fourthTokenStart >= 0, fourthTokenStart < lineEnd {
+                    tokenStart = fourthTokenStart; tokenEnd = lineEnd
+                } else if thirdTokenStart >= 0, thirdTokenStart < lineEnd {
+                    tokenStart = thirdTokenStart; tokenEnd = fourthTokenStart >= 0 ? fourthTokenStart - 1 : lineEnd
+                } else { return nil }
+                var pathStart = tokenStart
+                if tokenEnd - tokenStart >= 2,
+                   (base[tokenStart] == UInt8(ascii: "a") || base[tokenStart] == UInt8(ascii: "b")),
+                   base[tokenStart + 1] == UInt8(ascii: "/") {
+                    pathStart = tokenStart + 2
+                }
+                guard pathStart < tokenEnd else { return nil }
+                return String(decoding: UnsafeBufferPointer(start: base + pathStart, count: tokenEnd - pathStart), as: UTF8.self)
+            }
+
+            // Use memchr for line-oriented scanning
+            var pos = 0
+            while pos < count {
+                let nlResult = memchr(rawBase + pos, Int32(newline), count - pos)
+                let lineEnd: Int
+                if let nlPtr = nlResult {
+                    lineEnd = base.distance(to: nlPtr.assumingMemoryBound(to: UInt8.self))
+                } else {
+                    lineEnd = count
+                }
+
+                let lineScanLength = lineEnd - lineStart
+                if lineScanLength > 0 {
+                    let firstByte = base[lineStart]
+                    if firstByte == UInt8(ascii: "d") && lineScanLength >= 11 {
+                        var isDiffGit = true
+                        let pfx: (UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8) = (0x64,0x69,0x66,0x66,0x20,0x2D,0x2D,0x67,0x69,0x74,0x20)
+                        withUnsafeBytes(of: pfx) { pfxBuf in
+                            for j in 0..<11 {
+                                if base[lineStart + j] != pfxBuf[j] { isDiffGit = false; return }
+                            }
+                        }
+                        if isDiffGit {
+                            flushSection(until: lineStart)
+                            currentPath = extractPathFromDiffHeader(at: lineStart, length: lineScanLength)
+                            currentSectionStartOffset = lineStart
+                            currentContentBytes = 0
+                        }
+                    } else if currentPath != nil {
+                        if firstByte == plus && !(lineScanLength >= 3 && base[lineStart + 1] == plus && base[lineStart + 2] == plus) {
+                            currentContentBytes += lineScanLength - 1
+                        } else if firstByte == minus && !(lineScanLength >= 3 && base[lineStart + 1] == minus && base[lineStart + 2] == minus) {
+                            currentContentBytes += lineScanLength - 1
+                        }
+                    }
+                }
+
+                if nlResult != nil {
+                    lineStart = lineEnd + 1
+                    pos = lineEnd + 1
+                } else {
+                    pos = count
+                }
+            }
+
+            // Flush final section
+            if currentPath != nil {
+                rangesByOffset.append((path: currentPath!, startOffset: currentSectionStartOffset, endOffset: count))
+                if currentContentBytes > DiffSelectedFileRouteDecider.fastRendererByteThreshold {
+                    immediateWebViewPaths.insert(currentPath!)
+                }
             }
         }
 
-        if let currentSectionStart, currentPath != nil {
-            patchesByPath[currentPath!] = String(patch[currentSectionStart..<patch.endIndex])
+        var offsetsByPath: [String: (start: Int, end: Int)] = [:]
+        offsetsByPath.reserveCapacity(rangesByOffset.count)
+        for entry in rangesByOffset {
+            offsetsByPath[entry.path] = (start: entry.startOffset, end: entry.endOffset)
         }
-        return patchesByPath
+
+        return DiffPatchFileIndex(
+            originalPatch: patch,
+            offsetsByPath: offsetsByPath,
+            immediateWebViewPaths: immediateWebViewPaths
+        )
     }
 
     fileprivate static func diffHeaderPath<S: StringProtocol>(_ line: S) -> String? {
-        let parts = line.split(separator: " ", omittingEmptySubsequences: false)
-        guard parts.count >= 4 else { return nil }
-        let oldPath = normalizePatchPath(String(parts[2]))
-        let newPath = normalizePatchPath(String(parts[3]))
-        return newPath.isEmpty ? oldPath : newPath
+        let utf8 = line.utf8
+        let space = UInt8(ascii: " ")
+        var spaceCount = 0
+        var fourthTokenStart: S.UTF8View.Index?
+        var i = utf8.startIndex
+        while i < utf8.endIndex {
+            if utf8[i] == space {
+                spaceCount += 1
+                let nextIndex = utf8.index(after: i)
+                if spaceCount == 3 { fourthTokenStart = nextIndex; break }
+            }
+            i = utf8.index(after: i)
+        }
+        if let fourthStart = fourthTokenStart, fourthStart < utf8.endIndex {
+            let remaining = String(line[fourthStart..<line.endIndex])
+            if remaining.utf8.count >= 2,
+               (remaining.hasPrefix("a/") || remaining.hasPrefix("b/")) {
+                let stripped = String(remaining.dropFirst(2))
+                if !stripped.isEmpty { return stripped }
+            }
+            if !remaining.isEmpty { return remaining }
+        }
+        return nil
     }
 
     fileprivate static func normalizePatchPath(_ value: String) -> String {
@@ -162,7 +323,7 @@ enum DiffPatchRenderProxy {
 }
 
 enum DiffSelectedFileRouteDecider {
-    static let fastRendererByteThreshold = 24_000
+    static let fastRendererByteThreshold = 12_000
 
     static func shouldPreferFastRenderer(filePatch: String) -> Bool {
         guard !filePatch.isEmpty else { return false }
@@ -200,16 +361,28 @@ enum DiffPanelTreeBuilder {
         var additions: Int = 0
         var deletions: Int = 0
         var fileCount: Int = 0
-        var children: [String: BuilderNode] = [:]
+        var childPairs: [(key: String, node: BuilderNode)] = []
 
         init(id: String, name: String, fullPath: String? = nil) {
             self.id = id
             self.name = name
             self.fullPath = fullPath
         }
+
+        func findChild(_ key: String) -> BuilderNode? {
+            for pair in childPairs where pair.key == key {
+                return pair.node
+            }
+            return nil
+        }
+
+        func addChild(key: String, node: BuilderNode) {
+            childPairs.append((key: key, node: node))
+        }
     }
 
     static func build(from files: [DiffPanelTreeFile]) -> [DiffPanelTreeNode] {
+        guard !files.isEmpty else { return [] }
         let root = BuilderNode(id: "", name: "")
 
         for file in files {
@@ -224,7 +397,7 @@ enum DiffPanelTreeBuilder {
                 let currentPath = file.pathPrefixes[index]
                 let isLeaf = index == components.count - 1
 
-                if let existing = currentNode.children[component] {
+                if let existing = currentNode.findChild(component) {
                     currentNode = existing
                 } else {
                     let child = BuilderNode(
@@ -232,7 +405,7 @@ enum DiffPanelTreeBuilder {
                         name: component,
                         fullPath: isLeaf ? file.path : nil
                     )
-                    currentNode.children[component] = child
+                    currentNode.addChild(key: component, node: child)
                     currentNode = child
                 }
 
@@ -253,39 +426,43 @@ enum DiffPanelTreeBuilder {
     }
 
     private static func makeNodes(from builder: BuilderNode) -> [DiffPanelTreeNode] {
-        builder.children.values
-            .sorted { lhs, rhs in
-                if lhs.fullPath == nil, rhs.fullPath != nil {
-                    return true
-                }
-                if lhs.fullPath != nil, rhs.fullPath == nil {
-                    return false
-                }
-                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-            }
-            .map { child -> DiffPanelTreeNode in
-                var childNodes = makeNodes(from: child)
-                var displayName = child.name
-                var nodeID = child.id
+        builder.childPairs.sort { lhs, rhs in
+            let lhsIsDir = lhs.node.fullPath == nil
+            let rhsIsDir = rhs.node.fullPath == nil
+            if lhsIsDir && !rhsIsDir { return true }
+            if !lhsIsDir && rhsIsDir { return false }
+            return lhs.key < rhs.key
+        }
 
-                if child.fullPath == nil {
-                    while childNodes.count == 1, let only = childNodes.first, only.isDirectory {
-                        displayName = "\(displayName)/\(only.name)"
-                        nodeID = only.id
-                        childNodes = only.children
-                    }
-                }
+        var result: [DiffPanelTreeNode] = []
+        result.reserveCapacity(builder.childPairs.count)
 
-                return DiffPanelTreeNode(
-                    id: nodeID,
-                    name: displayName,
-                    fullPath: child.fullPath,
-                    additions: child.additions,
-                    deletions: child.deletions,
-                    fileCount: child.fileCount,
-                    children: childNodes
-                )
+        for pair in builder.childPairs {
+            let child = pair.node
+            var childNodes = makeNodes(from: child)
+            var displayName = child.name
+            var nodeID = child.id
+
+            if child.fullPath == nil {
+                while childNodes.count == 1, let only = childNodes.first, only.isDirectory {
+                    displayName = "\(displayName)/\(only.name)"
+                    nodeID = only.id
+                    childNodes = only.children
+                }
             }
+
+            result.append(DiffPanelTreeNode(
+                id: nodeID,
+                name: displayName,
+                fullPath: child.fullPath,
+                additions: child.additions,
+                deletions: child.deletions,
+                fileCount: child.fileCount,
+                children: childNodes
+            ))
+        }
+
+        return result
     }
 }
 

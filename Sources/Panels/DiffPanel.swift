@@ -695,8 +695,9 @@ final class DiffPanel: Panel, ObservableObject {
         if !forcePatch,
            statusFingerprint == previousStatusFingerprint,
            repositoryRootPath == previousRepositoryRootPath {
-            let filePatchesByPath = DiffPatchSelector.filePatchesByPath(from: previousPatch)
-            let immediateWebViewPaths = immediateWebViewPaths(from: filePatchesByPath)
+            let patchIndex = DiffPatchSelector.index(from: previousPatch)
+            let filePatchesByPath = patchIndex.patchesByPath
+            let immediateWebViewPaths = patchIndex.immediateWebViewPaths
             return WorkingTreeSnapshot(
                 repositoryRootPath: repositoryRootPath,
                 statusFingerprint: statusFingerprint,
@@ -721,8 +722,9 @@ final class DiffPanel: Panel, ObservableObject {
         do {
             let files = try workingTreeFiles(directory: repositoryRootPath)
             let patch = try buildPatch(repositoryRootPath: repositoryRootPath)
-            let filePatchesByPath = DiffPatchSelector.filePatchesByPath(from: patch)
-            let immediateWebViewPaths = immediateWebViewPaths(from: filePatchesByPath)
+            let patchIndex = DiffPatchSelector.index(from: patch)
+            let filePatchesByPath = patchIndex.patchesByPath
+            let immediateWebViewPaths = patchIndex.immediateWebViewPaths
             return WorkingTreeSnapshot(
                 repositoryRootPath: repositoryRootPath,
                 statusFingerprint: statusFingerprint,
@@ -802,8 +804,9 @@ final class DiffPanel: Panel, ObservableObject {
                 allowedExitStatuses: [0]
             )
             let files = fileEntries(fromPatch: patch)
-            let filePatchesByPath = DiffPatchSelector.filePatchesByPath(from: patch)
-            let immediateWebViewPaths = immediateWebViewPaths(from: filePatchesByPath)
+            let patchIndex = DiffPatchSelector.index(from: patch)
+            let filePatchesByPath = patchIndex.patchesByPath
+            let immediateWebViewPaths = patchIndex.immediateWebViewPaths
             let defaultSelectedFilePath = preferredDefaultSelectedFilePath(from: files)
             return CommitSnapshot(
                 sha: normalizedSHA,
@@ -936,8 +939,9 @@ final class DiffPanel: Panel, ObservableObject {
             as: UTF8.self
         )
         let files = fileEntries(fromLibgit2Diff: diffPointer)
-        let filePatchesByPath = DiffPatchSelector.filePatchesByPath(from: patch)
-        let immediateWebViewPaths = immediateWebViewPaths(from: filePatchesByPath)
+        let patchIndex = DiffPatchSelector.index(from: patch)
+        let filePatchesByPath = patchIndex.patchesByPath
+        let immediateWebViewPaths = patchIndex.immediateWebViewPaths
         let defaultSelectedFilePath = preferredDefaultSelectedFilePath(from: files)
         return CommitSnapshot(
             sha: sha,
@@ -1340,14 +1344,6 @@ final class DiffPanel: Panel, ObservableObject {
                     additions: $0.additions,
                     deletions: $0.deletions
                 )
-            }
-        )
-    }
-
-    private nonisolated static func immediateWebViewPaths(from filePatchesByPath: [String: String]) -> Set<String> {
-        Set(
-            filePatchesByPath.compactMap { path, patch in
-                DiffSelectedFileRouteDecider.shouldPreferFastRenderer(filePatch: patch) ? path : nil
             }
         )
     }
