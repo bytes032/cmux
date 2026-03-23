@@ -193,12 +193,14 @@ final class DiffPanel: Panel, ObservableObject {
         }
     }
 
-    var isDirty: Bool { false }
-
     func triggerFlash(reason: WorkspaceAttentionFlashReason = .debug) {
-        _ = reason
         guard NotificationPaneFlashSettings.isEnabled() else { return }
         focusFlashToken += 1
+    }
+
+    private func invalidateRenderPayloadCache() {
+        cachedRenderPayload = nil
+        cachedRenderPayloadIdentity = nil
     }
 
     func updateSourcePath(_ sourcePath: String) {
@@ -230,8 +232,7 @@ final class DiffPanel: Panel, ObservableObject {
         cachedRepositoryRootPath = sourcePath
         commitSnapshotCache = [:]
         currentDisplayedScopeCacheKey = ""
-        cachedRenderPayload = nil
-        cachedRenderPayloadIdentity = nil
+        invalidateRenderPayloadCache()
         requestRefresh(forcePatch: true)
     }
 
@@ -246,8 +247,7 @@ final class DiffPanel: Panel, ObservableObject {
         selectedCommitSHA = nil
         isShowingAllFiles = true
         selectedFilePath = nil
-        cachedRenderPayload = nil
-        cachedRenderPayloadIdentity = nil
+        invalidateRenderPayloadCache()
         activeWorkingTreeStatusFingerprint = cachedWorkingTreeStatusFingerprint
         applyWorkingTreeSnapshotFromCache()
         requestRefresh(forcePatch: true)
@@ -266,8 +266,7 @@ final class DiffPanel: Panel, ObservableObject {
         selectedCommitSHA = normalizedSHA
         isShowingAllFiles = true
         selectedFilePath = nil
-        cachedRenderPayload = nil
-        cachedRenderPayloadIdentity = nil
+        invalidateRenderPayloadCache()
         if let snapshot = commitSnapshotCache[normalizedSHA] {
             apply(commitSnapshot: snapshot)
             return
@@ -305,14 +304,12 @@ final class DiffPanel: Panel, ObservableObject {
     func selectAllFiles() {
         guard !files.isEmpty else {
             selectedFilePath = nil
-            cachedRenderPayload = nil
-            cachedRenderPayloadIdentity = nil
+            invalidateRenderPayloadCache()
             return
         }
         isShowingAllFiles = true
         selectedFilePath = nil
-        cachedRenderPayload = nil
-        cachedRenderPayloadIdentity = nil
+        invalidateRenderPayloadCache()
     }
 
     func selectFile(_ path: String) {
@@ -320,8 +317,7 @@ final class DiffPanel: Panel, ObservableObject {
         guard selectedFilePath != path else { return }
         isShowingAllFiles = false
         selectedFilePath = path
-        cachedRenderPayload = nil
-        cachedRenderPayloadIdentity = nil
+        invalidateRenderPayloadCache()
     }
 
     func setPreferredWebViewIsDarkMode(_ isDarkMode: Bool) {

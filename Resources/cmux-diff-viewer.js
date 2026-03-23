@@ -198,7 +198,7 @@ function clearSurfaceTransition() {
     activeSurface = lastSurface;
   }
 
-  for (const surface of root.querySelectorAll(".diff-render-surface")) {
+  for (const surface of surfaces) {
     surface.classList.remove(
       "diff-render-surface--incoming",
       "diff-render-surface--outgoing",
