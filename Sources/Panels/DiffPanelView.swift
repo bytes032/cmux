@@ -167,6 +167,8 @@ struct DiffPanelView: View {
     @State private var treeContext = DiffPanelTreeContext()
     @State private var sharedWebViewUpdateContext = DiffWebViewUpdateContext()
     @State private var showingCommits: Bool = false
+    @State private var shouldPresentScopeLoadingOverlay = false
+    @State private var scopeLoadingOverlayGeneration: Int = 0
     @Environment(\.colorScheme) private var colorScheme
 
     private let inspectorWidth: CGFloat = 284
@@ -198,6 +200,7 @@ struct DiffPanelView: View {
             panel.setPreferredWebViewIsDarkMode(colorScheme == .dark)
             refreshSearchableFiles(from: panel.files)
             syncExpandedDirectories(with: panel.files)
+            updateScopeLoadingOverlayVisibility()
         }
         .onChange(of: panel.focusFlashToken) {
             triggerFocusFlashAnimation()
@@ -208,6 +211,12 @@ struct DiffPanelView: View {
         .onChange(of: panel.files) {
             refreshSearchableFiles(from: panel.files)
             syncExpandedDirectories(with: panel.files)
+        }
+        .onChange(of: panel.isScopeLoading) {
+            updateScopeLoadingOverlayVisibility()
+        }
+        .onChange(of: panel.hasLoadedSnapshot) {
+            updateScopeLoadingOverlayVisibility()
         }
     }
 
@@ -232,7 +241,7 @@ struct DiffPanelView: View {
     }
 
     private var shouldShowLoadingOverlay: Bool {
-        panel.hasLoadedSnapshot && panel.isScopeLoading
+        shouldPresentScopeLoadingOverlay
     }
 
     private var currentWebViewPayload: DiffWebViewRenderPayload? {
@@ -272,7 +281,8 @@ struct DiffPanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(backgroundColor.opacity(0.88))
+        .background(backgroundColor.opacity(colorScheme == .dark ? 0.26 : 0.34))
+        .transition(.opacity)
     }
 
     private var cleanView: some View {
@@ -759,6 +769,29 @@ struct DiffPanelView: View {
     private func refreshSearchableFiles(from files: [DiffPanel.FileEntry]) {
         searchableFiles = files.map(SearchableFileEntry.init)
     }
+
+    private func updateScopeLoadingOverlayVisibility() {
+        scopeLoadingOverlayGeneration &+= 1
+        let generation = scopeLoadingOverlayGeneration
+
+        guard panel.hasLoadedSnapshot else {
+            shouldPresentScopeLoadingOverlay = false
+            return
+        }
+
+        guard panel.isScopeLoading else {
+            shouldPresentScopeLoadingOverlay = false
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            guard scopeLoadingOverlayGeneration == generation else { return }
+            guard panel.hasLoadedSnapshot, panel.isScopeLoading else { return }
+            withAnimation(.easeOut(duration: 0.12)) {
+                shouldPresentScopeLoadingOverlay = true
+            }
+        }
+    }
 }
 
 private struct DiffWebViewRepresentable: NSViewRepresentable {
@@ -851,17 +884,18 @@ private struct DiffWebViewRepresentable: NSViewRepresentable {
             }
 
             pushInFlight = true
+            let pushedPayload = pendingPayload
             #if DEBUG
             lastPayloadPushStartedAt = Date()
                 dlog(
-                "diff.webview.push kind=\(update.kind) payloadBytes=\(update.encodedBytes) selected=\(pendingPayload.selectedFilePath ?? "all-files") fileCount=\(pendingPayload.files.count) firstFile=\(pendingPayload.files.first?.displayPath ?? "none")"
+                "diff.webview.push kind=\(update.kind) payloadBytes=\(update.encodedBytes) selected=\(pushedPayload.selectedFilePath ?? "all-files") fileCount=\(pushedPayload.files.count) firstFile=\(pushedPayload.files.first?.displayPath ?? "none")"
             )
             #endif
             webView.evaluateJavaScript(update.javaScript) { [weak self] _, error in
                 guard let self else { return }
                 self.pushInFlight = false
                 guard error == nil else { return }
-                self.appliedPayload = pendingPayload
+                self.appliedPayload = pushedPayload
                 #if DEBUG
                 if let lastPayloadPushStartedAt = self.lastPayloadPushStartedAt {
                     let elapsedMs = Int(Date().timeIntervalSince(lastPayloadPushStartedAt) * 1000)

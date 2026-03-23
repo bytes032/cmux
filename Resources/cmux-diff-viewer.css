@@ -101,6 +101,29 @@ html[data-theme="dark"] body::-webkit-scrollbar-thumb:hover {
 
 #root {
   padding: 12px 14px 18px;
+  display: grid;
+  position: relative;
+}
+
+#root.is-transitioning > .diff-render-surface {
+  grid-area: 1 / 1;
+}
+
+.diff-render-surface {
+  min-width: 0;
+}
+
+.diff-render-surface--incoming {
+  opacity: 0;
+}
+
+.diff-render-surface--active,
+.diff-render-surface--fade {
+  transition: opacity 120ms ease;
+}
+
+.diff-render-surface--fade {
+  opacity: 0.18;
 }
 
 .diff-file {

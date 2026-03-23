@@ -103,6 +103,9 @@ final class DiffPanel: Panel, ObservableObject {
     var isShowingWorkingTree: Bool { selectedCommitSHA == nil }
 
     var currentTreeCacheKey: String {
+        if !currentDisplayedScopeCacheKey.isEmpty {
+            return currentDisplayedScopeCacheKey
+        }
         if let selectedCommitSHA {
             return "commit:\(selectedCommitSHA)"
         }
@@ -141,6 +144,7 @@ final class DiffPanel: Panel, ObservableObject {
     private var activeWorkingTreeStatusFingerprint = ""
     private(set) var currentScopeFilePatchesByPath: [String: String] = [:]
     private(set) var currentScopeImmediateWebViewPaths: Set<String> = []
+    private var currentDisplayedScopeCacheKey = ""
     private nonisolated(unsafe) var preferredWebViewIsDarkMode = false
     /// Cached render payload — invalidated when scope or selection changes.
     /// Avoids rebuilding the full renderable file array on every SwiftUI body re-evaluation.
@@ -189,7 +193,10 @@ final class DiffPanel: Panel, ObservableObject {
         }
     }
 
-    func triggerFlash() {
+    var isDirty: Bool { false }
+
+    func triggerFlash(reason: WorkspaceAttentionFlashReason = .debug) {
+        _ = reason
         guard NotificationPaneFlashSettings.isEnabled() else { return }
         focusFlashToken += 1
     }
@@ -222,6 +229,9 @@ final class DiffPanel: Panel, ObservableObject {
         cachedCommits = []
         cachedRepositoryRootPath = sourcePath
         commitSnapshotCache = [:]
+        currentDisplayedScopeCacheKey = ""
+        cachedRenderPayload = nil
+        cachedRenderPayloadIdentity = nil
         requestRefresh(forcePatch: true)
     }
 
@@ -236,6 +246,8 @@ final class DiffPanel: Panel, ObservableObject {
         selectedCommitSHA = nil
         isShowingAllFiles = true
         selectedFilePath = nil
+        cachedRenderPayload = nil
+        cachedRenderPayloadIdentity = nil
         activeWorkingTreeStatusFingerprint = cachedWorkingTreeStatusFingerprint
         applyWorkingTreeSnapshotFromCache()
         requestRefresh(forcePatch: true)
@@ -254,6 +266,8 @@ final class DiffPanel: Panel, ObservableObject {
         selectedCommitSHA = normalizedSHA
         isShowingAllFiles = true
         selectedFilePath = nil
+        cachedRenderPayload = nil
+        cachedRenderPayloadIdentity = nil
         if let snapshot = commitSnapshotCache[normalizedSHA] {
             apply(commitSnapshot: snapshot)
             return
@@ -291,10 +305,14 @@ final class DiffPanel: Panel, ObservableObject {
     func selectAllFiles() {
         guard !files.isEmpty else {
             selectedFilePath = nil
+            cachedRenderPayload = nil
+            cachedRenderPayloadIdentity = nil
             return
         }
         isShowingAllFiles = true
         selectedFilePath = nil
+        cachedRenderPayload = nil
+        cachedRenderPayloadIdentity = nil
     }
 
     func selectFile(_ path: String) {
@@ -302,6 +320,8 @@ final class DiffPanel: Panel, ObservableObject {
         guard selectedFilePath != path else { return }
         isShowingAllFiles = false
         selectedFilePath = path
+        cachedRenderPayload = nil
+        cachedRenderPayloadIdentity = nil
     }
 
     func setPreferredWebViewIsDarkMode(_ isDarkMode: Bool) {
@@ -386,6 +406,7 @@ final class DiffPanel: Panel, ObservableObject {
         }
 
         if isShowingWorkingTree {
+            currentDisplayedScopeCacheKey = "working-tree:\(snapshot.statusFingerprint)"
             patch = snapshot.patch
             files = snapshot.files
             unfilteredTreeNodes = snapshot.treeNodes
@@ -401,6 +422,7 @@ final class DiffPanel: Panel, ObservableObject {
         guard !isClosed else { return }
         guard selectedCommitSHA == snapshot.sha else { return }
 
+        currentDisplayedScopeCacheKey = "commit:\(snapshot.sha)"
         patch = snapshot.patch
         files = snapshot.files
         unfilteredTreeNodes = snapshot.treeNodes
@@ -426,6 +448,7 @@ final class DiffPanel: Panel, ObservableObject {
     }
 
     private func applyWorkingTreeSnapshotFromCache() {
+        currentDisplayedScopeCacheKey = "working-tree:\(cachedWorkingTreeStatusFingerprint)"
         patch = cachedWorkingTreePatch
         files = cachedWorkingTreeFiles
         unfilteredTreeNodes = cachedWorkingTreeTreeNodes
@@ -463,14 +486,17 @@ final class DiffPanel: Panel, ObservableObject {
 
         // Compute the expected cache identity for the current state
         let expectedIdentity: String
+        let scopeKey = currentDisplayedScopeCacheKey.isEmpty
+            ? currentTreeCacheKey
+            : currentDisplayedScopeCacheKey
         let resolvedSingleFilePath: String?
         if isShowingAllFiles {
-            expectedIdentity = "\(currentTreeCacheKey)|all-files"
+            expectedIdentity = "\(scopeKey)|all-files"
             resolvedSingleFilePath = nil
         } else {
             let resolved = selectedFilePath ?? Self.preferredDefaultSelectedFilePath(from: files)
             guard let resolved else { return nil }
-            expectedIdentity = "\(currentTreeCacheKey)|file:\(resolved)"
+            expectedIdentity = "\(scopeKey)|file:\(resolved)"
             resolvedSingleFilePath = resolved
         }
 

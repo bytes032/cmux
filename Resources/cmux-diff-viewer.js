@@ -3,6 +3,8 @@ const root = document.getElementById("root");
 const perfReporter = window.webkit?.messageHandlers?.cmuxDiffPerf;
 let worker = null;
 let workerCreationAttempted = false;
+let activeSurface = null;
+let surfaceTransitionCleanupTimer = null;
 
 let currentHighlightRequestId = 0;
 let currentHighlightToken = 0;
@@ -57,9 +59,11 @@ window.cmuxDiffRender = function(payload) {
     const files = Array.isArray(payload.files) ? payload.files : [];
 
     const renderStartedAt = performance.now();
-    root.textContent = "";
 
     if (files.length === 0) {
+      clearSurfaceTransition();
+      root.replaceChildren();
+      activeSurface = null;
       reportPerf({
         type: "render-empty",
         mode: "selected-file",
@@ -84,7 +88,10 @@ window.cmuxDiffRender = function(payload) {
         });
       }
     });
-    root.appendChild(fragment);
+    const nextSurface = document.createElement("div");
+    nextSurface.className = "diff-render-surface";
+    nextSurface.appendChild(fragment);
+    mountSurface(nextSurface);
 
     const renderDurationMs = roundMs(performance.now() - renderStartedAt);
     reportPerf({
@@ -123,7 +130,9 @@ window.cmuxDiffRender = function(payload) {
     }
   } catch (error) {
     console.error("cmux diff render failed", error);
+    clearSurfaceTransition();
     root.textContent = "";
+    activeSurface = null;
     const errorState = document.createElement("div");
     errorState.className = "empty-state";
     errorState.textContent = `Diff render failed: ${error && error.message ? error.message : String(error)}`;
@@ -134,6 +143,69 @@ window.cmuxDiffRender = function(payload) {
 
 if (state.currentPayload) {
   window.cmuxDiffRender(state.currentPayload);
+}
+
+function mountSurface(nextSurface) {
+  clearSurfaceTransition();
+
+  const previousSurface =
+    activeSurface && root.contains(activeSurface)
+      ? activeSurface
+      : root.querySelector(".diff-render-surface");
+
+  nextSurface.classList.add("diff-render-surface--incoming");
+
+  if (!previousSurface) {
+    root.replaceChildren(nextSurface);
+    nextSurface.classList.remove("diff-render-surface--incoming");
+    nextSurface.classList.add("diff-render-surface--active");
+    activeSurface = nextSurface;
+    return;
+  }
+
+  previousSurface.classList.add("diff-render-surface--outgoing");
+  root.classList.add("is-transitioning");
+  root.appendChild(nextSurface);
+
+  requestAnimationFrame(() => {
+    nextSurface.classList.add("diff-render-surface--active");
+    nextSurface.classList.remove("diff-render-surface--incoming");
+    previousSurface.classList.add("diff-render-surface--fade");
+  });
+
+  surfaceTransitionCleanupTimer = window.setTimeout(() => {
+    if (root.contains(previousSurface)) {
+      previousSurface.remove();
+    }
+    root.classList.remove("is-transitioning");
+    nextSurface.classList.remove("diff-render-surface--active");
+    activeSurface = nextSurface;
+    surfaceTransitionCleanupTimer = null;
+  }, 140);
+}
+
+function clearSurfaceTransition() {
+  if (surfaceTransitionCleanupTimer != null) {
+    window.clearTimeout(surfaceTransitionCleanupTimer);
+    surfaceTransitionCleanupTimer = null;
+  }
+
+  root.classList.remove("is-transitioning");
+  const surfaces = Array.from(root.querySelectorAll(".diff-render-surface"));
+  if (surfaces.length > 1) {
+    const lastSurface = surfaces[surfaces.length - 1];
+    root.replaceChildren(lastSurface);
+    activeSurface = lastSurface;
+  }
+
+  for (const surface of root.querySelectorAll(".diff-render-surface")) {
+    surface.classList.remove(
+      "diff-render-surface--incoming",
+      "diff-render-surface--outgoing",
+      "diff-render-surface--fade",
+      "diff-render-surface--active"
+    );
+  }
 }
 
 function renderFile(file, fileIndex, totalFiles) {
