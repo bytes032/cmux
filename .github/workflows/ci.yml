@@ -495,12 +495,35 @@ jobs:
           {"helperBinaryPath":"$HELPER_PATH"}
           EOF
 
-          xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Debug \
-            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
-            -disableAutomaticPackageResolution \
-            -destination "platform=macOS" \
-            -only-testing:cmuxUITests/DisplayResolutionRegressionUITests \
-            test
+          run_display_resolution_ui_test() {
+            xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Debug \
+              -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
+              -disableAutomaticPackageResolution \
+              -destination "platform=macOS" \
+              -only-testing:cmuxUITests/DisplayResolutionRegressionUITests \
+              test 2>&1
+          }
+
+          set +e
+          run_display_resolution_ui_test | tee /tmp/display-resolution-ui-test-output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          OUTPUT=$(cat /tmp/display-resolution-ui-test-output.txt)
+          set -e
+
+          if [ "$EXIT_CODE" -ne 0 ] && echo "$OUTPUT" | grep -q "Failed to activate application.*Running Background"; then
+            echo "Display resolution UI regression hit launch activation flake, retrying once"
+            pkill -x "cmux DEV" || true
+            sleep 2
+            set +e
+            run_display_resolution_ui_test | tee /tmp/display-resolution-ui-test-output.txt
+            EXIT_CODE=${PIPESTATUS[0]}
+            OUTPUT=$(cat /tmp/display-resolution-ui-test-output.txt)
+            set -e
+          fi
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            exit "$EXIT_CODE"
+          fi
 
       - name: Run browser find focus UI regression
         run: |
